@@ -1,0 +1,543 @@
+// Pixel editor modal for direct grid painting, zoom, and undo/redo actions.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PixelGrid } from "../types";
+
+type EditorTool = "pen" | "eraser" | "fill";
+
+const ZOOM_STEPS = [1, 2, 4, 8, 16, 24, 32] as const;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function copyIndices(indices: Uint16Array): Uint16Array {
+  return new Uint16Array(indices);
+}
+
+function drawLine(
+  data: Uint16Array,
+  width: number,
+  height: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  colorIndex: number,
+): void {
+  let x = x0;
+  let y = y0;
+  const dx = Math.abs(x1 - x0);
+  const dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+
+  while (true) {
+    if (x >= 0 && x < width && y >= 0 && y < height) {
+      data[y * width + x] = colorIndex;
+    }
+    if (x === x1 && y === y1) {
+      break;
+    }
+    const e2 = err * 2;
+    if (e2 >= dy) {
+      err += dy;
+      x += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+}
+
+function floodFill(
+  data: Uint16Array,
+  width: number,
+  height: number,
+  startX: number,
+  startY: number,
+  colorIndex: number,
+): void {
+  if (startX < 0 || startX >= width || startY < 0 || startY >= height) {
+    return;
+  }
+  const startPos = startY * width + startX;
+  const targetColor = data[startPos];
+  if (targetColor === colorIndex) {
+    return;
+  }
+
+  const stack: Array<[number, number]> = [[startX, startY]];
+  const visited = new Uint8Array(width * height);
+  visited[startPos] = 1;
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      break;
+    }
+    const [x, y] = current;
+    const idx = y * width + x;
+    data[idx] = colorIndex;
+
+    const neighbors: Array<[number, number]> = [
+      [x - 1, y],
+      [x + 1, y],
+      [x, y - 1],
+      [x, y + 1],
+    ];
+
+    for (const [nx, ny] of neighbors) {
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+        continue;
+      }
+      const nIdx = ny * width + nx;
+      if (!visited[nIdx] && data[nIdx] === targetColor) {
+        visited[nIdx] = 1;
+        stack.push([nx, ny]);
+      }
+    }
+  }
+}
+
+interface PixelEditorModalProps {
+  grid: PixelGrid;
+  onSave: (indices: Uint16Array) => void;
+  onClose: () => void;
+  t: (key: string) => string;
+}
+
+export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalProps) {
+  const [indices, setIndices] = useState(() => copyIndices(grid.indices));
+  const [tool, setTool] = useState<EditorTool>("pen");
+  const [colorIndex, setColorIndex] = useState(0);
+  const [zoomIndex, setZoomIndex] = useState(3);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [spacePressed, setSpacePressed] = useState(false);
+
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const lastCellRef = useRef<{ x: number; y: number } | null>(null);
+  const panStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null);
+  const drawingRef = useRef(false);
+  const undoRef = useRef<Uint16Array[]>([]);
+  const redoRef = useRef<Uint16Array[]>([]);
+  const zoomIndexRef = useRef(zoomIndex);
+  const offsetRef = useRef(offset);
+
+  zoomIndexRef.current = zoomIndex;
+  offsetRef.current = offset;
+
+  const zoom = ZOOM_STEPS[zoomIndex];
+  const canUndo = undoRef.current.length > 0;
+  const canRedo = redoRef.current.length > 0;
+
+  useEffect(() => {
+    setIndices(copyIndices(grid.indices));
+    setColorIndex(0);
+    undoRef.current = [];
+    redoRef.current = [];
+  }, [grid]);
+
+  useEffect(() => {
+    const view = viewportRef.current;
+    if (!view) {
+      return;
+    }
+    const rect = view.getBoundingClientRect();
+    const unit = ZOOM_STEPS[zoomIndexRef.current];
+    setOffset({
+      x: (rect.width - grid.width * unit) / 2,
+      y: (rect.height - grid.height * unit) / 2,
+    });
+  }, [grid.width, grid.height]);
+
+  const pushUndo = useCallback(() => {
+    undoRef.current.push(copyIndices(indices));
+    if (undoRef.current.length > 40) {
+      undoRef.current.shift();
+    }
+    redoRef.current = [];
+  }, [indices]);
+
+  const undo = useCallback(() => {
+    if (undoRef.current.length === 0) {
+      return;
+    }
+    const previous = undoRef.current.pop();
+    if (!previous) {
+      return;
+    }
+    redoRef.current.push(copyIndices(indices));
+    setIndices(previous);
+  }, [indices]);
+
+  const redo = useCallback(() => {
+    if (redoRef.current.length === 0) {
+      return;
+    }
+    const next = redoRef.current.pop();
+    if (!next) {
+      return;
+    }
+    undoRef.current.push(copyIndices(indices));
+    setIndices(next);
+  }, [indices]);
+
+  const locateCell = useCallback((clientX: number, clientY: number) => {
+    const view = viewportRef.current;
+    if (!view) {
+      return null;
+    }
+    const rect = view.getBoundingClientRect();
+    const x = Math.floor((clientX - rect.left - offsetRef.current.x) / ZOOM_STEPS[zoomIndexRef.current]);
+    const y = Math.floor((clientY - rect.top - offsetRef.current.y) / ZOOM_STEPS[zoomIndexRef.current]);
+    return { x, y };
+  }, []);
+
+  const setPixelLine = useCallback((from: { x: number; y: number }, to: { x: number; y: number }) => {
+    const nextColor = tool === "eraser" ? 0 : colorIndex;
+    setIndices((previous) => {
+      const next = copyIndices(previous);
+      drawLine(next, grid.width, grid.height, from.x, from.y, to.x, to.y, nextColor);
+      return next;
+    });
+  }, [colorIndex, grid.height, grid.width, tool]);
+
+  const onPointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.button === 1 || (event.button === 0 && spacePressed)) {
+      panStartRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        offsetX: offsetRef.current.x,
+        offsetY: offsetRef.current.y,
+      };
+      return;
+    }
+
+    const cell = locateCell(event.clientX, event.clientY);
+    if (!cell) {
+      return;
+    }
+
+    if (event.button === 2) {
+      if (cell.x >= 0 && cell.x < grid.width && cell.y >= 0 && cell.y < grid.height) {
+        const picked = indices[cell.y * grid.width + cell.x] ?? 0;
+        setColorIndex(picked);
+        setTool("pen");
+      }
+      return;
+    }
+
+    if (event.button !== 0) {
+      return;
+    }
+
+    if (tool === "fill") {
+      if (cell.x < 0 || cell.x >= grid.width || cell.y < 0 || cell.y >= grid.height) {
+        return;
+      }
+      pushUndo();
+      const next = copyIndices(indices);
+      floodFill(next, grid.width, grid.height, cell.x, cell.y, colorIndex);
+      setIndices(next);
+      return;
+    }
+
+    pushUndo();
+    drawingRef.current = true;
+    lastCellRef.current = cell;
+    setPixelLine(cell, cell);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [spacePressed, locateCell, grid.width, grid.height, indices, tool, pushUndo, colorIndex, setPixelLine]);
+
+  const onPointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (panStartRef.current) {
+      const dx = event.clientX - panStartRef.current.x;
+      const dy = event.clientY - panStartRef.current.y;
+      setOffset({
+        x: panStartRef.current.offsetX + dx,
+        y: panStartRef.current.offsetY + dy,
+      });
+      return;
+    }
+
+    if (!drawingRef.current) {
+      return;
+    }
+
+    const cell = locateCell(event.clientX, event.clientY);
+    if (!cell) {
+      return;
+    }
+    if (cell.x < 0 || cell.x >= grid.width || cell.y < 0 || cell.y >= grid.height) {
+      return;
+    }
+    const previous = lastCellRef.current;
+    if (!previous) {
+      lastCellRef.current = cell;
+      return;
+    }
+    if (previous.x === cell.x && previous.y === cell.y) {
+      return;
+    }
+    setPixelLine(previous, cell);
+    lastCellRef.current = cell;
+  }, [grid.height, grid.width, locateCell, setPixelLine]);
+
+  const endPointer = useCallback(() => {
+    panStartRef.current = null;
+    drawingRef.current = false;
+    lastCellRef.current = null;
+  }, []);
+
+  const onWheel = useCallback((event: React.WheelEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    const view = viewportRef.current;
+    if (!view) {
+      return;
+    }
+
+    const currentIndex = zoomIndexRef.current;
+    const nextIndex = clamp(currentIndex + (event.deltaY < 0 ? 1 : -1), 0, ZOOM_STEPS.length - 1);
+    if (nextIndex === currentIndex) {
+      return;
+    }
+
+    const rect = view.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left;
+    const pointerY = event.clientY - rect.top;
+    const currentZoom = ZOOM_STEPS[currentIndex];
+    const nextZoom = ZOOM_STEPS[nextIndex];
+
+    const nextOffset = {
+      x: pointerX - ((pointerX - offsetRef.current.x) / currentZoom) * nextZoom,
+      y: pointerY - ((pointerY - offsetRef.current.y) / currentZoom) * nextZoom,
+    };
+
+    setZoomIndex(nextIndex);
+    setOffset(nextOffset);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === " ") {
+        event.preventDefault();
+        setSpacePressed(true);
+        return;
+      }
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undo();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "y" || (event.key.toLowerCase() === "z" && event.shiftKey))) {
+        event.preventDefault();
+        redo();
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === " ") {
+        setSpacePressed(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [onClose, redo, undo]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const viewport = viewportRef.current;
+    if (!canvas || !viewport) {
+      return;
+    }
+
+    const rect = viewport.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    canvas.style.width = `${rect.width}px`;
+    canvas.style.height = `${rect.height}px`;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = "#808080";
+    ctx.fillRect(0, 0, rect.width, rect.height);
+
+    const unit = zoom;
+    const left = offset.x;
+    const top = offset.y;
+
+    for (let y = 0; y < grid.height; y += 1) {
+      for (let x = 0; x < grid.width; x += 1) {
+        const px = left + x * unit;
+        const py = top + y * unit;
+        if (px + unit < 0 || py + unit < 0 || px > rect.width || py > rect.height) {
+          continue;
+        }
+
+        const isEven = (x + y) % 2 === 0;
+        ctx.fillStyle = isEven ? "#c0c0c0" : "#a0a0a0";
+        ctx.fillRect(px, py, unit, unit);
+
+        const color = grid.colors[indices[y * grid.width + x]];
+        if (color) {
+          ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+          ctx.fillRect(px, py, unit, unit);
+        }
+      }
+    }
+
+    if (unit >= 4) {
+      ctx.strokeStyle = "rgba(0,0,0,0.15)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= grid.width; x += 1) {
+        const gx = Math.round(left + x * unit) + 0.5;
+        ctx.moveTo(gx, top);
+        ctx.lineTo(gx, top + grid.height * unit);
+      }
+      for (let y = 0; y <= grid.height; y += 1) {
+        const gy = Math.round(top + y * unit) + 0.5;
+        ctx.moveTo(left, gy);
+        ctx.lineTo(left + grid.width * unit, gy);
+      }
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(
+      Math.round(left) - 0.5,
+      Math.round(top) - 0.5,
+      grid.width * unit + 1,
+      grid.height * unit + 1,
+    );
+  }, [grid.colors, grid.height, grid.width, indices, offset.x, offset.y, zoom]);
+
+  const toolButtons = useMemo(() => {
+    const items: Array<{ id: EditorTool; label: string }> = [
+      { id: "pen", label: t("pen") },
+      { id: "eraser", label: t("eraser") },
+      { id: "fill", label: t("fill") },
+    ];
+    return items.map((item) => (
+      <button
+        key={item.id}
+        type="button"
+        className={`retro-btn btn-mini ${tool === item.id ? "is-active" : ""}`}
+        onClick={() => setTool(item.id)}
+      >
+        {item.label}
+      </button>
+    ));
+  }, [t, tool]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="editor-overlay"
+      onClick={(event) => {
+        if (event.currentTarget === event.target) {
+          onClose();
+        }
+      }}
+    >
+      <section className="window editor-window">
+        <header className="main-title">
+          <span className="main-title__text">{t("edit")}</span>
+          <button type="button" className="retro-btn btn-mini" onClick={onClose}>
+            ×
+          </button>
+        </header>
+
+        <div className="editor-toolbar">
+          <div className="editor-tools">{toolButtons}</div>
+          <button type="button" className="retro-btn btn-mini" onClick={undo} disabled={!canUndo}>
+            {t("editorUndo")}
+          </button>
+          <button type="button" className="retro-btn btn-mini" onClick={redo} disabled={!canRedo}>
+            {t("editorRedo")}
+          </button>
+          <button
+            type="button"
+            className="retro-btn btn-mini"
+            onClick={() => setZoomIndex((current) => clamp(current - 1, 0, ZOOM_STEPS.length - 1))}
+            disabled={zoomIndex <= 0}
+          >
+            -
+          </button>
+          <button
+            type="button"
+            className="retro-btn btn-mini"
+            onClick={() => setZoomIndex((current) => clamp(current + 1, 0, ZOOM_STEPS.length - 1))}
+            disabled={zoomIndex >= ZOOM_STEPS.length - 1}
+          >
+            +
+          </button>
+          <span className="editor-zoom">{grid.width}x{grid.height} | x{zoom}</span>
+        </div>
+
+        <div ref={viewportRef} className="editor-canvas-wrap">
+          <canvas
+            ref={canvasRef}
+            className="editor-canvas"
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={endPointer}
+            onPointerCancel={endPointer}
+            onContextMenu={(event) => event.preventDefault()}
+            onWheel={onWheel}
+          />
+        </div>
+
+        <div className="editor-palette">
+          {grid.colors.map((color, index) => (
+            <button
+              key={`${color[0]}-${color[1]}-${color[2]}-${index}`}
+              type="button"
+              className={`editor-color ${colorIndex === index ? "is-active" : ""}`}
+              style={{ background: `rgb(${color[0]},${color[1]},${color[2]})` }}
+              onClick={() => {
+                setColorIndex(index);
+                setTool("pen");
+              }}
+            />
+          ))}
+        </div>
+
+        <footer className="editor-footer">
+          <span>{t("editorHintPc")}</span>
+          <div className="editor-actions">
+            <button
+              type="button"
+              className="retro-btn btn-mini"
+              onClick={() => onSave(copyIndices(indices))}
+            >
+              {t("editorSave")}
+            </button>
+            <button type="button" className="retro-btn btn-mini" onClick={onClose}>
+              {t("editorCancel")}
+            </button>
+          </div>
+        </footer>
+      </section>
+    </div>
+  );
+}
