@@ -28,6 +28,7 @@ import {
 } from "../lib/projectStore";
 import { renderFrame } from "../lib/renderFrame";
 import type {
+  AnimationState,
   BatchProgress,
   DialogState,
   EffectsState,
@@ -314,6 +315,67 @@ function defaultEffectTuning(): EffectTuning {
 }
 
 /**
+ * 复制一份 FX 调参对象。/ Clone effect tuning object.
+ * @param tuning FX 调参 / Effect tuning.
+ * @returns 调参副本 / Cloned tuning.
+ */
+function cloneEffectTuning(tuning: EffectTuning): EffectTuning {
+  return { ...tuning };
+}
+
+/**
+ * 创建默认动画状态（起止关键帧参数一致）。/ Create default animation state with identical start/end tuning.
+ * @returns 默认动画状态 / Default animation state.
+ */
+function defaultAnimationState(): AnimationState {
+  const seed = defaultEffectTuning();
+  return {
+    enabled: false,
+    playing: false,
+    loop: true,
+    durationMs: 2600,
+    progress: 0,
+    startTuning: cloneEffectTuning(seed),
+    endTuning: cloneEffectTuning(seed),
+  };
+}
+
+/**
+ * 线性插值两个数字。/ Linearly interpolate two numbers.
+ * @param a 起点 / Start value.
+ * @param b 终点 / End value.
+ * @param t 插值系数 0..1 / Interpolation factor 0..1.
+ * @returns 插值结果 / Interpolated value.
+ */
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/**
+ * 根据进度插值整套 FX 参数。/ Interpolate full effect tuning by progress.
+ * @param from 起始关键帧参数 / Start keyframe tuning.
+ * @param to 结束关键帧参数 / End keyframe tuning.
+ * @param progress 动画进度 0..1 / Animation progress 0..1.
+ * @returns 当前帧调参 / Tuning values for current frame.
+ */
+function interpolateEffectTuning(from: EffectTuning, to: EffectTuning, progress: number): EffectTuning {
+  const t = clamp(progress, 0, 1);
+  return {
+    glitchPower: lerp(from.glitchPower, to.glitchPower, t),
+    glitchSpeed: lerp(from.glitchSpeed, to.glitchSpeed, t),
+    crtPower: lerp(from.crtPower, to.crtPower, t),
+    paletteCycleSpeed: lerp(from.paletteCycleSpeed, to.paletteCycleSpeed, t),
+    paletteCycleStep: Math.round(lerp(from.paletteCycleStep, to.paletteCycleStep, t)),
+    ghostPower: lerp(from.ghostPower, to.ghostPower, t),
+    ghostSpeed: lerp(from.ghostSpeed, to.ghostSpeed, t),
+    ditherPower: lerp(from.ditherPower, to.ditherPower, t),
+    ditherSpeed: lerp(from.ditherSpeed, to.ditherSpeed, t),
+    wavePower: lerp(from.wavePower, to.wavePower, t),
+    waveSpeed: lerp(from.waveSpeed, to.waveSpeed, t),
+  };
+}
+
+/**
  * 生成“每个特效都启用蒙版”的默认映射。/ Build default per-effect mask toggles (all enabled).
  * @returns FX 蒙版开关映射 / Per-effect mask toggle map.
  */
@@ -431,6 +493,7 @@ export function usePixelConverter(ghostSrc: string) {
   const [paletteOverrides, setPaletteOverrides] = useState<Partial<Record<PaletteId, PaletteColor[]>>>({});
   const [effects, setEffects] = useState<EffectsState>(defaultEffects);
   const [effectTuning, setEffectTuning] = useState<EffectTuning>(defaultEffectTuning);
+  const [animation, setAnimation] = useState<AnimationState>(defaultAnimationState);
   const [dialog, setDialog] = useState<DialogState>(defaultDialog);
   const [mask, setMask] = useState<MaskState>(defaultMask);
   const [grid, setGrid] = useState<PixelGrid | null>(null);
@@ -453,6 +516,9 @@ export function usePixelConverter(ghostSrc: string) {
   const dirtyRef = useRef(true);
   const lastFrameRef = useRef(0);
   const lastEffectTickRef = useRef(-1);
+  const animationElapsedRef = useRef(0);
+  const animationUiCommitAtRef = useRef(0);
+  const animationRef = useRef(animation);
   const processBatchFilesRef = useRef<(files: File[]) => void>(() => {});
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -480,6 +546,10 @@ export function usePixelConverter(ghostSrc: string) {
     },
     [strings],
   );
+
+  useEffect(() => {
+    animationRef.current = animation;
+  }, [animation]);
 
   const resetMaskDataForGrid = useCallback((targetGrid: PixelGrid | null) => {
     setMask((previous) => {
@@ -592,6 +662,13 @@ export function usePixelConverter(ghostSrc: string) {
       setSelectedPresetId(null);
     }
   }, [presets, selectedPresetId]);
+
+  useEffect(() => {
+    if (animation.playing) {
+      return;
+    }
+    animationElapsedRef.current = clamp(animation.progress, 0, 1) * Math.max(300, animation.durationMs);
+  }, [animation.durationMs, animation.playing, animation.progress]);
 
   const rebuildGrid = useCallback(() => {
     if (!sourceImageRef.current) {
@@ -740,6 +817,69 @@ export function usePixelConverter(ghostSrc: string) {
       dirtyRef.current = true;
       return next;
     });
+  }, []);
+
+  const setAnimationEnabled = useCallback((enabled: boolean) => {
+    setAnimation((previous) => ({
+      ...previous,
+      enabled,
+      playing: enabled ? previous.playing : false,
+    }));
+    dirtyRef.current = true;
+  }, []);
+
+  const setAnimationLoop = useCallback((loop: boolean) => {
+    setAnimation((previous) => ({ ...previous, loop }));
+    dirtyRef.current = true;
+  }, []);
+
+  const setAnimationDuration = useCallback((durationMs: number) => {
+    const nextDuration = clamp(Math.round(durationMs), 300, 15000);
+    setAnimation((previous) => ({ ...previous, durationMs: nextDuration }));
+    dirtyRef.current = true;
+  }, []);
+
+  const setAnimationProgress = useCallback((progress: number) => {
+    const nextProgress = clamp(progress, 0, 1);
+    setAnimation((previous) => ({ ...previous, progress: nextProgress, playing: false }));
+    animationElapsedRef.current = nextProgress * Math.max(300, animationRef.current.durationMs);
+    dirtyRef.current = true;
+  }, []);
+
+  const captureAnimationStart = useCallback(() => {
+    setAnimation((previous) => ({
+      ...previous,
+      startTuning: cloneEffectTuning(effectTuning),
+    }));
+    dirtyRef.current = true;
+  }, [effectTuning]);
+
+  const captureAnimationEnd = useCallback(() => {
+    setAnimation((previous) => ({
+      ...previous,
+      endTuning: cloneEffectTuning(effectTuning),
+    }));
+    dirtyRef.current = true;
+  }, [effectTuning]);
+
+  const toggleAnimationPlaying = useCallback(() => {
+    setAnimation((previous) => {
+      const nextPlaying = !previous.playing;
+      const nextProgress = nextPlaying && previous.progress >= 1 ? 0 : previous.progress;
+      animationElapsedRef.current = nextProgress * Math.max(300, previous.durationMs);
+      return {
+        ...previous,
+        playing: nextPlaying,
+        progress: nextProgress,
+      };
+    });
+    dirtyRef.current = true;
+  }, []);
+
+  const stopAnimationPlayback = useCallback(() => {
+    setAnimation((previous) => ({ ...previous, playing: false, progress: 0 }));
+    animationElapsedRef.current = 0;
+    dirtyRef.current = true;
   }, []);
 
   const setMaskEnabled = useCallback((enabled: boolean) => {
@@ -1252,6 +1392,11 @@ export function usePixelConverter(ghostSrc: string) {
       selectedPresetId,
       batchNamingTemplate,
       performanceMode,
+      animation: {
+        ...animation,
+        startTuning: cloneEffectTuning(animation.startTuning),
+        endTuning: cloneEffectTuning(animation.endTuning),
+      },
       gridSnapshot: grid ? toGridSnapshot(grid) : null,
     });
 
@@ -1265,7 +1410,7 @@ export function usePixelConverter(ghostSrc: string) {
     document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
     setStatusKey("statusProjectSaved");
-  }, [batchNamingTemplate, dialog, effectTuning, effects, grid, mask, palette, paletteOverrides, performanceMode, pixelSize, presets, selectedPresetId]);
+  }, [animation, batchNamingTemplate, dialog, effectTuning, effects, grid, mask, palette, paletteOverrides, performanceMode, pixelSize, presets, selectedPresetId]);
 
   const onImportProject = useCallback(async (file: File) => {
     const text = await file.text();
@@ -1300,6 +1445,23 @@ export function usePixelConverter(ghostSrc: string) {
     setDialog({ ...state.dialog });
     setBatchNamingTemplate(typeof state.batchNamingTemplate === "string" ? state.batchNamingTemplate : defaultBatchNamingTemplate());
     setPerformanceMode(Boolean(state.performanceMode));
+    if (state.animation && typeof state.animation === "object") {
+      const raw = state.animation as Partial<AnimationState>;
+      const durationMs = clamp(Math.round(Number(raw.durationMs ?? 2600)), 300, 15000);
+      const progress = clamp(Number(raw.progress ?? 0), 0, 1);
+      const startTuning = raw.startTuning ? { ...defaultEffectTuning(), ...raw.startTuning } : defaultEffectTuning();
+      const endTuning = raw.endTuning ? { ...defaultEffectTuning(), ...raw.endTuning } : defaultEffectTuning();
+      setAnimation({
+        enabled: Boolean(raw.enabled),
+        playing: false,
+        loop: raw.loop === undefined ? true : Boolean(raw.loop),
+        durationMs,
+        progress,
+        startTuning,
+        endTuning,
+      });
+      animationElapsedRef.current = progress * durationMs;
+    }
     setPresets(Array.isArray(state.presets) ? state.presets.slice(0, PRESET_LIMIT) : []);
     setSelectedPresetId(typeof state.selectedPresetId === "string" ? state.selectedPresetId : null);
 
@@ -1466,7 +1628,21 @@ export function usePixelConverter(ghostSrc: string) {
     if (!canvas || !grid || !canRecordVideo || isRecording) {
       return;
     }
+    const animationSnapshot = animationRef.current;
+    const shouldRecordAnimation = animationSnapshot.enabled;
+    const recordDurationMs = shouldRecordAnimation
+      ? Math.max(500, Math.round(animationSnapshot.durationMs))
+      : 2600;
+
     setIsRecording(true);
+    if (shouldRecordAnimation) {
+      animationElapsedRef.current = 0;
+      setAnimation((previous) => ({
+        ...previous,
+        playing: true,
+        progress: 0,
+      }));
+    }
     dirtyRef.current = true;
     try {
       const stream = canvas.captureStream(10);
@@ -1489,7 +1665,7 @@ export function usePixelConverter(ghostSrc: string) {
           if (recorder.state !== "inactive") {
             recorder.stop();
           }
-        }, 2600);
+        }, recordDurationMs);
       });
 
       stream.getTracks().forEach((track) => track.stop());
@@ -1503,6 +1679,14 @@ export function usePixelConverter(ghostSrc: string) {
       document.body.removeChild(anchor);
       URL.revokeObjectURL(url);
     } finally {
+      if (shouldRecordAnimation) {
+        setAnimation((previous) => ({
+          ...previous,
+          playing: animationSnapshot.playing,
+          progress: animationSnapshot.progress,
+        }));
+        animationElapsedRef.current = clamp(animationSnapshot.progress, 0, 1) * Math.max(300, animationSnapshot.durationMs);
+      }
       setIsRecording(false);
       dirtyRef.current = true;
     }
@@ -1510,7 +1694,7 @@ export function usePixelConverter(ghostSrc: string) {
 
   useEffect(() => {
     dirtyRef.current = true;
-  }, [grid, effects, effectTuning, dialog, lang, palette, pixelSize, mask, performanceMode]);
+  }, [grid, effects, effectTuning, dialog, lang, palette, pixelSize, mask, performanceMode, animation]);
 
   useEffect(() => {
     let rafId = 0;
@@ -1564,7 +1748,52 @@ export function usePixelConverter(ghostSrc: string) {
         }
 
         const effectTick = Math.floor(nowMs / 120);
-        const hasTimedEffects = effects.glitch || effects.paletteCycle || effects.ghost || effects.ditherFade || effects.waveWarp;
+        const runtimeAnimation = animationRef.current;
+        let tuningForFrame = effectTuning;
+        let animationProgress = clamp(runtimeAnimation.progress, 0, 1);
+        if (runtimeAnimation.enabled) {
+          if (runtimeAnimation.playing) {
+            const duration = Math.max(300, Math.round(runtimeAnimation.durationMs));
+            let elapsed = animationElapsedRef.current + delta;
+            if (elapsed >= duration) {
+              if (runtimeAnimation.loop) {
+                elapsed %= duration;
+              } else {
+                elapsed = duration;
+              }
+            }
+            animationElapsedRef.current = elapsed;
+            animationProgress = clamp(elapsed / duration, 0, 1);
+            if (!runtimeAnimation.loop && animationProgress >= 1 && runtimeAnimation.playing) {
+              setAnimation((previous) => (previous.playing
+                ? { ...previous, playing: false, progress: 1 }
+                : previous));
+            } else if (nowMs - animationUiCommitAtRef.current >= 45) {
+              animationUiCommitAtRef.current = nowMs;
+              setAnimation((previous) => (
+                Math.abs(previous.progress - animationProgress) > 0.003
+                  ? { ...previous, progress: animationProgress }
+                  : previous
+              ));
+            }
+            dirtyRef.current = true;
+          } else {
+            animationElapsedRef.current = animationProgress * Math.max(300, Math.round(runtimeAnimation.durationMs));
+          }
+          tuningForFrame = interpolateEffectTuning(
+            runtimeAnimation.startTuning,
+            runtimeAnimation.endTuning,
+            animationProgress,
+          );
+        }
+
+        const hasTimedEffects =
+          effects.glitch
+          || effects.paletteCycle
+          || effects.ghost
+          || effects.ditherFade
+          || effects.waveWarp
+          || (runtimeAnimation.enabled && runtimeAnimation.playing);
         if (hasTimedEffects && effectTick !== lastEffectTickRef.current) {
           lastEffectTickRef.current = effectTick;
           dirtyRef.current = true;
@@ -1590,7 +1819,7 @@ export function usePixelConverter(ghostSrc: string) {
             canvas,
             grid,
             effects,
-            effectTuning,
+            tuningForFrame,
             mask,
             renderDialogForFrame,
             Math.floor(revealCountRef.current),
@@ -1678,6 +1907,7 @@ export function usePixelConverter(ghostSrc: string) {
     setPalette,
     effects,
     effectTuning,
+    animation,
     dialog,
     mask,
     presets,
@@ -1685,6 +1915,14 @@ export function usePixelConverter(ghostSrc: string) {
     setSelectedPresetId,
     patchDialog,
     patchEffectTuning,
+    setAnimationEnabled,
+    setAnimationLoop,
+    setAnimationDuration,
+    setAnimationProgress,
+    captureAnimationStart,
+    captureAnimationEnd,
+    toggleAnimationPlaying,
+    stopAnimationPlayback,
     setMaskEnabled,
     setMaskMode,
     setBrushSize,

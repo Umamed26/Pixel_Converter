@@ -34,6 +34,16 @@ export interface EffectTuning {
   waveSpeed: number;
 }
 
+export interface AnimationState {
+  enabled: boolean;
+  playing: boolean;
+  loop: boolean;
+  durationMs: number;
+  progress: number;
+  startTuning: EffectTuning;
+  endTuning: EffectTuning;
+}
+
 export interface DialogState {
   enabled: boolean;
   style: "win95" | "terminal" | "dq" | "ff" | "retro" | "neon" | "stone" | "paper" | "void" | "aqua";
@@ -114,6 +124,7 @@ export interface ProjectStateV1 {
   selectedPresetId: string | null;
   batchNamingTemplate: string;
   performanceMode: boolean;
+  animation?: AnimationState;
   gridSnapshot: PixelGridSnapshot | null;
 }
 

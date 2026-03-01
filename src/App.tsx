@@ -24,6 +24,7 @@ function App() {
     setPalette,
     effects,
     effectTuning,
+    animation,
     dialog,
     mask,
     presets,
@@ -31,6 +32,14 @@ function App() {
     setSelectedPresetId,
     patchDialog,
     patchEffectTuning,
+    setAnimationEnabled,
+    setAnimationLoop,
+    setAnimationDuration,
+    setAnimationProgress,
+    captureAnimationStart,
+    captureAnimationEnd,
+    toggleAnimationPlaying,
+    stopAnimationPlayback,
     setMaskEnabled,
     setMaskMode,
     setBrushSize,
@@ -569,6 +578,66 @@ function App() {
                       </label>
                     </div>
                   ) : null}
+                </div>
+              </div>
+            </section>
+
+            <section className="tool-window">
+              <header>
+                <span>{t("animationTitle")}</span>
+                <WindowControls />
+              </header>
+              <div className="tool-content">
+                <label className="dialog-toggle">
+                  <input
+                    type="checkbox"
+                    checked={animation.enabled}
+                    onChange={(event) => setAnimationEnabled(event.target.checked)}
+                  />
+                  <span>{t("animationEnable")}</span>
+                </label>
+                <label className="dialog-advanced__label">
+                  <span>{t("animationDuration")} {animation.durationMs}ms</span>
+                  <input
+                    type="range"
+                    min={300}
+                    max={12000}
+                    step={100}
+                    value={animation.durationMs}
+                    onChange={(event) => setAnimationDuration(Number(event.target.value))}
+                  />
+                </label>
+                <label className="dialog-toggle">
+                  <input
+                    type="checkbox"
+                    checked={animation.loop}
+                    onChange={(event) => setAnimationLoop(event.target.checked)}
+                  />
+                  <span>{t("animationLoop")}</span>
+                </label>
+                <label className="dialog-advanced__label">
+                  <span>{t("animationProgress")} {Math.round(animation.progress * 100)}%</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={Math.round(animation.progress * 100)}
+                    onChange={(event) => setAnimationProgress(Number(event.target.value) / 100)}
+                  />
+                </label>
+                <div className="tiny-grid">
+                  <button type="button" className="retro-btn btn-mini" onClick={captureAnimationStart}>
+                    {t("animationSetStart")}
+                  </button>
+                  <button type="button" className="retro-btn btn-mini" onClick={captureAnimationEnd}>
+                    {t("animationSetEnd")}
+                  </button>
+                  <button type="button" className="retro-btn btn-mini" onClick={toggleAnimationPlaying}>
+                    {animation.playing ? t("animationPause") : t("animationPlay")}
+                  </button>
+                  <button type="button" className="retro-btn btn-mini" onClick={stopAnimationPlayback}>
+                    {t("animationStop")}
+                  </button>
                 </div>
               </div>
             </section>

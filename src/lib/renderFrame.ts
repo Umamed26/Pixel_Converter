@@ -1135,6 +1135,62 @@ function drawDialog(
 }
 
 /**
+ * FX 插件定义：描述单个效果的执行函数。/ FX plugin contract for one effect stage.
+ */
+export interface EffectPlugin {
+  key: keyof EffectsState;
+  apply: (
+    ctx: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
+    grid: PixelGrid,
+    tuning: EffectTuning,
+    effectTick: number,
+  ) => void;
+}
+
+/**
+ * 默认 FX 插件注册表（执行顺序即数组顺序）。/ Default FX plugin registry (array order is execution order).
+ */
+export const DEFAULT_EFFECT_PLUGINS: EffectPlugin[] = [
+  {
+    key: "crt",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyCrt(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "paletteCycle",
+    apply: (ctx, canvas, grid, tuning, effectTick) => {
+      applyPaletteCycle(ctx, canvas.width, canvas.height, grid.colors, effectTick, tuning);
+    },
+  },
+  {
+    key: "ghost",
+    apply: (ctx, canvas, _grid, tuning, effectTick) => {
+      applyGhostTrail(ctx, canvas.width, canvas.height, effectTick, tuning);
+    },
+  },
+  {
+    key: "ditherFade",
+    apply: (ctx, canvas, _grid, tuning, effectTick) => {
+      applyDitherFade(ctx, canvas.width, canvas.height, effectTick, tuning);
+    },
+  },
+  {
+    key: "waveWarp",
+    apply: (ctx, canvas, grid, tuning, effectTick) => {
+      applyWaveWarp(ctx, canvas.width, canvas.height, grid.pixelSize, effectTick, tuning);
+    },
+  },
+  {
+    key: "glitch",
+    apply: (ctx, canvas, grid, tuning, effectTick) => {
+      applyGlitch(ctx, canvas.width, canvas.height, grid.pixelSize, effectTick, tuning);
+    },
+  },
+];
+
+/**
  * 主渲染入口：按固定顺序绘制网格、FX 与对话框。/ Main frame renderer: draws grid, applies FX in order, then dialog.
  * @param canvas 输出画布 / Output canvas.
  * @param grid 像素网格 / Pixel grid.
@@ -1157,6 +1213,7 @@ export function renderFrame(
   revealCount: number,
   _ghostImage: HTMLImageElement,
   timeMs: number,
+  plugins: EffectPlugin[] = DEFAULT_EFFECT_PLUGINS,
 ): void {
   canvas.width = grid.width * grid.pixelSize;
   canvas.height = grid.height * grid.pixelSize;
@@ -1168,35 +1225,12 @@ export function renderFrame(
 
   drawGrid(ctx, grid);
   const effectTick = Math.floor(timeMs / EFFECT_TICK_MS);
-
-  if (effects.crt) {
-    applyEffectWithOptionalMask(ctx, canvas, grid, mask, "crt", () => {
-      applyCrt(ctx, canvas.width, canvas.height, tuning);
-    });
-  }
-  if (effects.paletteCycle) {
-    applyEffectWithOptionalMask(ctx, canvas, grid, mask, "paletteCycle", () => {
-      applyPaletteCycle(ctx, canvas.width, canvas.height, grid.colors, effectTick, tuning);
-    });
-  }
-  if (effects.ghost) {
-    applyEffectWithOptionalMask(ctx, canvas, grid, mask, "ghost", () => {
-      applyGhostTrail(ctx, canvas.width, canvas.height, effectTick, tuning);
-    });
-  }
-  if (effects.ditherFade) {
-    applyEffectWithOptionalMask(ctx, canvas, grid, mask, "ditherFade", () => {
-      applyDitherFade(ctx, canvas.width, canvas.height, effectTick, tuning);
-    });
-  }
-  if (effects.waveWarp) {
-    applyEffectWithOptionalMask(ctx, canvas, grid, mask, "waveWarp", () => {
-      applyWaveWarp(ctx, canvas.width, canvas.height, grid.pixelSize, effectTick, tuning);
-    });
-  }
-  if (effects.glitch) {
-    applyEffectWithOptionalMask(ctx, canvas, grid, mask, "glitch", () => {
-      applyGlitch(ctx, canvas.width, canvas.height, grid.pixelSize, effectTick, tuning);
+  for (const plugin of plugins) {
+    if (!effects[plugin.key]) {
+      continue;
+    }
+    applyEffectWithOptionalMask(ctx, canvas, grid, mask, plugin.key, () => {
+      plugin.apply(ctx, canvas, grid, tuning, effectTick);
     });
   }
   drawDialog(ctx, canvas, dialog, revealCount, timeMs);
