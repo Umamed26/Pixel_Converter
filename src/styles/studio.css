@@ -1,4 +1,4 @@
-/* Main theme stylesheet for desktop, windows, taskbar, dialogs, and responsive behavior. */
+/* 主主题样式：桌面、窗口、任务栏、弹窗与响应式布局。/ Main theme styles for desktop, windows, taskbar, dialogs, and responsive layout. */
 :root {
   --desktop-sky-top: #a9d1ff;
   --desktop-sky-mid: #6eaef5;
@@ -1189,7 +1189,7 @@ input[type="range"]::-moz-range-thumb {
   }
 }
 
-/* WinXP native detail pass */
+/* WinXP 细节覆盖层。/ WinXP detail override layer. */
 body::before {
   content: "";
   position: fixed;
@@ -1511,7 +1511,7 @@ select {
   }
 }
 
-/* Taskbar windows + start menu */
+/* 任务栏窗口区与开始菜单样式。/ Taskbar window area and start menu styles. */
 .taskbar {
   overflow: visible;
 }

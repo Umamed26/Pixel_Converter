@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-// Worker-side pixelization pipeline to keep heavy image processing off the main thread.
+// Worker 像素化流水线：将重计算移出主线程。/ Worker pixelization pipeline: moves heavy processing off the main thread.
 
 import type { PaletteColor } from "../types";
 
@@ -31,6 +31,13 @@ interface PixelizeFailure {
 const MAX_SOURCE_DIMENSION = 600;
 const ALPHA_THRESHOLD = 30;
 
+/**
+ * 按最大边限制等比缩放尺寸。/ Fit dimensions into a max side while preserving ratio.
+ * @param width 原始宽度 / Original width.
+ * @param height 原始高度 / Original height.
+ * @param maxDimension 最大边长 / Maximum side length.
+ * @returns 适配后的尺寸 / Fitted dimensions.
+ */
 function fitToMaxDimension(width: number, height: number, maxDimension: number) {
   if (width <= maxDimension && height <= maxDimension) {
     return { width, height };
@@ -42,6 +49,14 @@ function fitToMaxDimension(width: number, height: number, maxDimension: number) 
   };
 }
 
+/**
+ * 在调色板中寻找最近颜色索引。/ Find nearest palette index by RGB squared distance.
+ * @param r 红色通道 / Red channel.
+ * @param g 绿色通道 / Green channel.
+ * @param b 蓝色通道 / Blue channel.
+ * @param palette 调色板 / Palette colors.
+ * @returns 最近颜色索引 / Nearest palette index.
+ */
 function nearestColorIndex(r: number, g: number, b: number, palette: PaletteColor[]): number {
   let best = 0;
   let bestDist = Number.POSITIVE_INFINITY;
@@ -59,6 +74,15 @@ function nearestColorIndex(r: number, g: number, b: number, palette: PaletteColo
   return best;
 }
 
+/**
+ * Worker 中执行像素化转换。/ Execute pixelization in worker context.
+ * @param id 请求 ID / Request id.
+ * @param buffer 文件二进制数据 / File binary data.
+ * @param mimeType 文件 MIME 类型 / File MIME type.
+ * @param pixelSize 像素块尺寸 / Pixel block size.
+ * @param palette 目标调色板 / Target palette.
+ * @returns 像素化结果 / Pixelization result payload.
+ */
 async function pixelize(
   id: number,
   buffer: ArrayBuffer,

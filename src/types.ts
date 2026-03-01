@@ -1,4 +1,4 @@
-// Shared domain and serialization types used across hooks, libs, and components.
+// 共享类型：定义领域模型与序列化结构。/ Shared types: domain models and serialization contracts.
 export type Lang = "zh-CN" | "en";
 
 export type PaletteColor = [number, number, number];

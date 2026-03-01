@@ -1,4 +1,4 @@
-// Centralized product branding and legal/inspiration copy.
+// 品牌配置：集中管理产品命名与合规文案。/ Brand config: centralized naming and legal/inspiration copy.
 export interface BrandConfig {
   appName: string;
   versionLabel: string;

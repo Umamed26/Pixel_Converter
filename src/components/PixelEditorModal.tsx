@@ -1,4 +1,4 @@
-// Pixel editor modal for direct grid painting, zoom, and undo/redo actions.
+// 像素编辑器弹窗：支持绘制、缩放与撤销重做。/ Pixel editor modal: supports paint, zoom, undo, and redo.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PixelGrid } from "../types";
 
@@ -6,14 +6,38 @@ type EditorTool = "pen" | "eraser" | "fill";
 
 const ZOOM_STEPS = [1, 2, 4, 8, 16, 24, 32] as const;
 
+/**
+ * 限制数值区间。/ Clamp a value into range.
+ * @param value 输入值 / Input value.
+ * @param min 最小值 / Lower bound.
+ * @param max 最大值 / Upper bound.
+ * @returns 限制后的值 / Clamped result.
+ */
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/**
+ * 复制索引数组。/ Clone pixel index buffer.
+ * @param indices 源索引 / Source indices.
+ * @returns 新副本 / New copy.
+ */
 function copyIndices(indices: Uint16Array): Uint16Array {
   return new Uint16Array(indices);
 }
 
+/**
+ * 在索引网格上画线。/ Draw a line on the index grid.
+ * @param data 索引数据 / Index buffer.
+ * @param width 网格宽度 / Grid width.
+ * @param height 网格高度 / Grid height.
+ * @param x0 起点 X / Start X.
+ * @param y0 起点 Y / Start Y.
+ * @param x1 终点 X / End X.
+ * @param y1 终点 Y / End Y.
+ * @param colorIndex 颜色索引 / Color index.
+ * @returns 无返回值 / No return value.
+ */
 function drawLine(
   data: Uint16Array,
   width: number,
@@ -51,6 +75,16 @@ function drawLine(
   }
 }
 
+/**
+ * 从起点执行连通域填充。/ Flood-fill connected area from a start cell.
+ * @param data 索引数据 / Index buffer.
+ * @param width 网格宽度 / Grid width.
+ * @param height 网格高度 / Grid height.
+ * @param startX 起点 X / Start X.
+ * @param startY 起点 Y / Start Y.
+ * @param colorIndex 填充颜色索引 / Fill color index.
+ * @returns 无返回值 / No return value.
+ */
 function floodFill(
   data: Uint16Array,
   width: number,
@@ -108,6 +142,11 @@ interface PixelEditorModalProps {
   t: (key: string) => string;
 }
 
+/**
+ * 像素编辑器弹窗主组件。/ Main pixel editor modal component.
+ * @param props 网格数据、保存与关闭回调、翻译函数 / Grid data, callbacks, and i18n accessor.
+ * @returns 编辑器弹窗 JSX / Editor modal JSX.
+ */
 export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalProps) {
   const [indices, setIndices] = useState(() => copyIndices(grid.indices));
   const [tool, setTool] = useState<EditorTool>("pen");

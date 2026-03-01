@@ -1,4 +1,4 @@
-// Main application hook: owns state, rendering loop, import/export, presets, and mask workflows.
+// 核心 Hook：管理状态、渲染循环与导入导出流程。/ Core hook: manages state, render loop, and IO workflows.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import {
@@ -83,10 +83,21 @@ interface PixelWorkerFailure {
 const PIXEL_WORKER_TIMEOUT_MS = 15_000;
 const BATCH_RETRY_LIMIT = 3;
 
+/**
+ * 将网格索引序列压缩为 base36 字符串。/ Encode grid indices as compact base36 string.
+ * @param indices 网格索引数组 / Grid index array.
+ * @returns base36 编码字符串 / Base36 encoded string.
+ */
 function toBase36Grid(indices: Uint16Array): string {
   return Array.from(indices, (value) => value.toString(36)).join("");
 }
 
+/**
+ * 将 base36 字符串还原为索引数组。/ Parse base36-encoded grid string into index array.
+ * @param serialized base36 网格字符串 / Base36 grid string.
+ * @param expectedLength 期望长度 / Expected array length.
+ * @returns 索引数组；校验失败返回 null / Parsed indices or null when invalid.
+ */
 function parseBase36Grid(serialized: string, expectedLength: number): Uint16Array | null {
   if (typeof serialized !== "string" || serialized.length !== expectedLength) {
     return null;
@@ -102,6 +113,11 @@ function parseBase36Grid(serialized: string, expectedLength: number): Uint16Arra
   return parsed;
 }
 
+/**
+ * 把运行时网格转换为可序列化快照。/ Convert runtime grid into serializable snapshot.
+ * @param grid 运行时网格 / Runtime grid.
+ * @returns 网格快照对象 / Grid snapshot.
+ */
 function toGridSnapshot(grid: PixelGrid): PixelGridSnapshot {
   return {
     width: grid.width,
@@ -112,6 +128,11 @@ function toGridSnapshot(grid: PixelGrid): PixelGridSnapshot {
   };
 }
 
+/**
+ * 从快照恢复运行时网格。/ Restore runtime grid from snapshot.
+ * @param snapshot 网格快照 / Grid snapshot.
+ * @returns 运行时网格；无效时返回 null / Runtime grid or null.
+ */
 function fromGridSnapshot(snapshot: PixelGridSnapshot): PixelGrid | null {
   const width = Math.max(1, Math.floor(snapshot.width));
   const height = Math.max(1, Math.floor(snapshot.height));
@@ -129,10 +150,22 @@ function fromGridSnapshot(snapshot: PixelGridSnapshot): PixelGrid | null {
   };
 }
 
+/**
+ * 去掉文件名后缀。/ Remove file extension from filename.
+ * @param filename 原文件名 / Original filename.
+ * @returns 去后缀名称 / Filename without extension.
+ */
 function stripExt(filename: string): string {
   return filename.replace(/\.[^/.]+$/, "");
 }
 
+/**
+ * 按模板格式化批量导出文件名。/ Build batch export filename from template.
+ * @param template 命名模板 / Naming template.
+ * @param filename 原文件名 / Original filename.
+ * @param index 序号 / Item index.
+ * @returns 安全文件名（不含非法字符）/ Sanitized filename.
+ */
 function formatBatchName(template: string, filename: string, index: number): string {
   const base = stripExt(filename) || "image";
   const raw = template
@@ -142,10 +175,20 @@ function formatBatchName(template: string, filename: string, index: number): str
   return (raw || `${base}_${String(index).padStart(3, "0")}`).replace(/[\\/:*?"<>|]/g, "_");
 }
 
+/**
+ * 规范化百分比进度值到 0..100。/ Clamp progress to 0..100 integer.
+ * @param value 原始进度值 / Raw progress value.
+ * @returns 规范化进度 / Clamped progress.
+ */
 function clampProgress(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+/**
+ * 判断值是否为合法颜色三元组。/ Check whether value is a valid RGB tuple.
+ * @param value 待判断值 / Value to inspect.
+ * @returns 是否合法 / True when valid color row.
+ */
 function isValidColorRow(value: unknown): value is [number, number, number] {
   if (!Array.isArray(value) || value.length !== 3) {
     return false;
@@ -153,10 +196,22 @@ function isValidColorRow(value: unknown): value is [number, number, number] {
   return value.every((channel) => typeof channel === "number" && Number.isFinite(channel));
 }
 
+/**
+ * 限制数值区间。/ Clamp number into range.
+ * @param value 输入值 / Input value.
+ * @param min 最小值 / Lower bound.
+ * @param max 最大值 / Upper bound.
+ * @returns 区间内结果 / Clamped result.
+ */
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/**
+ * 将颜色通道规范到 0..255 整数。/ Normalize RGB channels into 0..255 integers.
+ * @param value 原始颜色 / Raw color tuple.
+ * @returns 规范化颜色 / Normalized color tuple.
+ */
 function normalizeColor(value: PaletteColor): PaletteColor {
   return [
     clamp(Math.round(value[0]), 0, 255),
@@ -165,6 +220,11 @@ function normalizeColor(value: PaletteColor): PaletteColor {
   ];
 }
 
+/**
+ * 清洗并去重调色板。/ Sanitize and deduplicate palette colors.
+ * @param colors 原始调色板 / Raw palette colors.
+ * @returns 清洗后的调色板 / Sanitized palette colors.
+ */
 function normalizePalette(colors: PaletteColor[]): PaletteColor[] {
   const dedup = new Map<string, PaletteColor>();
   for (const color of colors) {
@@ -175,6 +235,11 @@ function normalizePalette(colors: PaletteColor[]): PaletteColor[] {
   return result.length > 0 ? result : [[0, 0, 0]];
 }
 
+/**
+ * 按 `---` 分隔符解析对话页。/ Split dialog text into pages using `---` separators.
+ * @param text 原始文本 / Raw dialog text.
+ * @returns 分页文本数组 / Dialog pages.
+ */
 function parseDialogPages(text: string): string[] {
   const pages = text
     .split(/\n-{3,}\n/g)
@@ -182,6 +247,10 @@ function parseDialogPages(text: string): string[] {
   return pages.length > 0 ? pages : [""];
 }
 
+/**
+ * 根据 URL 参数检测语言。/ Detect language from URL query.
+ * @returns 当前语言代码 / Active language code.
+ */
 function detectLanguage(): Lang {
   const query = new URLSearchParams(window.location.search);
   const lang = query.get("lang") as Lang | null;
@@ -191,6 +260,10 @@ function detectLanguage(): Lang {
   return "zh-CN";
 }
 
+/**
+ * 创建默认特效开关状态。/ Create default effect toggles.
+ * @returns 默认 EffectsState / Default EffectsState.
+ */
 function defaultEffects(): EffectsState {
   return {
     glitch: false,
@@ -202,6 +275,10 @@ function defaultEffects(): EffectsState {
   };
 }
 
+/**
+ * 创建默认对话框状态。/ Create default dialog state.
+ * @returns 默认 DialogState / Default DialogState.
+ */
 function defaultDialog(): DialogState {
   return {
     enabled: false,
@@ -216,6 +293,10 @@ function defaultDialog(): DialogState {
   };
 }
 
+/**
+ * 创建默认 FX 调参。/ Create default effect tuning values.
+ * @returns 默认 EffectTuning / Default EffectTuning.
+ */
 function defaultEffectTuning(): EffectTuning {
   return {
     glitchPower: 100,
@@ -232,11 +313,19 @@ function defaultEffectTuning(): EffectTuning {
   };
 }
 
+/**
+ * 生成“每个特效都启用蒙版”的默认映射。/ Build default per-effect mask toggles (all enabled).
+ * @returns FX 蒙版开关映射 / Per-effect mask toggle map.
+ */
 function defaultMaskFxEnabled(): Record<keyof EffectsState, boolean> {
   const entries = EFFECTS.map((effect) => [effect, true]);
   return Object.fromEntries(entries) as Record<keyof EffectsState, boolean>;
 }
 
+/**
+ * 创建默认蒙版状态。/ Create default mask state.
+ * @returns 默认 MaskState / Default MaskState.
+ */
 function defaultMask(): MaskState {
   return {
     enabled: false,
@@ -250,10 +339,19 @@ function defaultMask(): MaskState {
   };
 }
 
+/**
+ * 返回默认批处理命名模板。/ Return default batch naming template.
+ * @returns 命名模板字符串 / Naming template string.
+ */
 function defaultBatchNamingTemplate(): string {
   return "{name}_pixel_{index}";
 }
 
+/**
+ * 复制蒙版配置（不含位图数据）。/ Copy mask config without bitmap data.
+ * @param mask 蒙版配置 / Mask config.
+ * @returns 配置副本 / Cloned config.
+ */
 function copyMaskConfig(mask: MaskConfig): MaskConfig {
   return {
     enabled: mask.enabled,
@@ -264,10 +362,22 @@ function copyMaskConfig(mask: MaskConfig): MaskConfig {
   };
 }
 
+/**
+ * 将运行时蒙版状态转换为预设配置。/ Convert runtime mask state to preset config.
+ * @param mask 运行时蒙版状态 / Runtime mask state.
+ * @returns 可序列化蒙版配置 / Serializable mask config.
+ */
 function toPresetMaskConfig(mask: MaskState): MaskConfig {
   return copyMaskConfig(mask);
 }
 
+/**
+ * 由配置与尺寸创建完整蒙版状态。/ Build full mask state from config and dimensions.
+ * @param config 蒙版配置 / Mask config.
+ * @param width 目标宽度 / Target width.
+ * @param height 目标高度 / Target height.
+ * @returns 完整蒙版状态 / Full mask state.
+ */
 function createMaskStateFromConfig(config: MaskConfig, width: number, height: number): MaskState {
   const safeWidth = Math.max(0, Math.floor(width));
   const safeHeight = Math.max(0, Math.floor(height));
@@ -279,14 +389,27 @@ function createMaskStateFromConfig(config: MaskConfig, width: number, height: nu
   };
 }
 
+/**
+ * 获取当前 ISO 时间字符串。/ Get current ISO timestamp string.
+ * @returns ISO 时间 / ISO timestamp.
+ */
 function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * 生成轻量随机 ID。/ Generate a lightweight random id.
+ * @returns 随机 ID / Random id.
+ */
 function randomId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * 规范化调色板 ID。/ Normalize palette id from external input.
+ * @param raw 原始值 / Raw value.
+ * @returns 合法 PaletteId；非法返回 null / Valid PaletteId or null.
+ */
 function normalizePaletteId(raw: unknown): PaletteId | null {
   if (typeof raw !== "string") {
     return null;
@@ -295,6 +418,11 @@ function normalizePaletteId(raw: unknown): PaletteId | null {
   return mapped in PALETTES ? (mapped as PaletteId) : null;
 }
 
+/**
+ * 像素工作流核心 Hook。/ Core hook for the pixel workflow.
+ * @param ghostSrc 像素机器人图片地址 / Pixel mascot image source.
+ * @returns UI 层所需的状态与动作集合 / State and actions consumed by UI components.
+ */
 export function usePixelConverter(ghostSrc: string) {
   const [lang, setLang] = useState<Lang>(detectLanguage);
   const [statusKey, setStatusKey] = useState("statusReady");

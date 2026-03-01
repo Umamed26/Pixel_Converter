@@ -1,4 +1,4 @@
-// App shell: composes desktop UI, wires interactions, and connects hook state to components.
+// 应用主壳层：负责组合桌面 UI、连接交互与状态。/ App shell: composes desktop UI and wires stateful interactions.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import mascotPixelbot from "./assets/mascot_pixelbot.png";
 import { BRAND } from "./config/brand";
@@ -172,6 +172,11 @@ function App() {
     window.setTimeout(() => setStartPressed(false), 180);
   }, []);
 
+  /**
+   * 将指针坐标映射到蒙版网格坐标。/ Map pointer coordinates to mask grid coordinates.
+   * @param event 画布指针事件 / Canvas pointer event.
+   * @returns 网格坐标或 null / Grid point or null.
+   */
   const locateMaskPoint = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     if (!grid) {
       return null;
@@ -194,6 +199,11 @@ function App() {
     return { x, y };
   }, [grid]);
 
+  /**
+   * 开始蒙版绘制。/ Start mask drawing stroke.
+   * @param event 指针事件 / Pointer event.
+   * @returns 无返回值 / No return value.
+   */
   const onMaskPointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     if (!grid || !mask.enabled) {
       return;
@@ -210,6 +220,11 @@ function App() {
     event.currentTarget.setPointerCapture(event.pointerId);
   }, [grid, locateMaskPoint, mask.enabled, paintMaskStroke]);
 
+  /**
+   * 持续蒙版绘制。/ Continue mask drawing while dragging.
+   * @param event 指针事件 / Pointer event.
+   * @returns 无返回值 / No return value.
+   */
   const onMaskPointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isMaskDrawingRef.current || !mask.enabled) {
       return;
@@ -224,6 +239,11 @@ function App() {
     lastMaskPointRef.current = point;
   }, [locateMaskPoint, mask.enabled, paintMaskStroke]);
 
+  /**
+   * 结束蒙版绘制。/ Finish current mask drawing stroke.
+   * @param event 指针事件 / Pointer event.
+   * @returns 无返回值 / No return value.
+   */
   const onMaskPointerEnd = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isMaskDrawingRef.current) {
       return;
@@ -253,6 +273,11 @@ function App() {
     }
   }, [presets, selectedPresetId]);
 
+  /**
+   * 处理预览区拖拽：优先识别 `.pxc`，否则按图片流程处理。/ Handle preview drop: prioritize `.pxc`, otherwise image flow.
+   * @param event 拖拽事件 / Drag event.
+   * @returns 无返回值 / No return value.
+   */
   const onPreviewDrop = useCallback((event: React.DragEvent<HTMLElement>) => {
     const files = Array.from(event.dataTransfer.files ?? []);
     const projectFile = files.find((file) => /\.pxc$/i.test(file.name));

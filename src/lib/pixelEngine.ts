@@ -1,10 +1,18 @@
-// Pixel conversion engine: image load, grid quantization, palette mapping, and export scaling.
+// 像素化引擎：负责读图、网格量化、调色板映射与导出缩放。/ Pixel engine: load image, quantize grid, map palette, and scale export.
 import type { PaletteColor, PixelGrid } from "../types";
 
 const MAX_SOURCE_DIMENSION = 600;
 const ALPHA_THRESHOLD = 30;
 const DEFAULT_EXPORT_MAX_SIDE = 1200;
 
+/**
+ * 在调色板中查找与目标颜色距离最近的颜色索引。/ Find nearest palette index using RGB squared distance.
+ * @param r 红色通道 / Red channel.
+ * @param g 绿色通道 / Green channel.
+ * @param b 蓝色通道 / Blue channel.
+ * @param palette 调色板颜色数组 / Palette colors.
+ * @returns 最近颜色索引 / Nearest palette index.
+ */
 function nearestColorIndex(r: number, g: number, b: number, palette: PaletteColor[]): number {
   let best = 0;
   let bestDist = Number.POSITIVE_INFINITY;
@@ -22,10 +30,22 @@ function nearestColorIndex(r: number, g: number, b: number, palette: PaletteColo
   return best;
 }
 
+/**
+ * 把通道值量化到 32 步进。/ Quantize a channel into 32-step buckets.
+ * @param value 原始通道值 / Raw channel value.
+ * @returns 量化后的通道值 / Quantized channel value.
+ */
 function quantizeChannel(value: number): number {
   return Math.max(0, Math.min(255, Math.round(value / 32) * 32));
 }
 
+/**
+ * 按最大边约束等比缩放尺寸。/ Fit width/height into a max dimension while preserving aspect ratio.
+ * @param width 原始宽度 / Original width.
+ * @param height 原始高度 / Original height.
+ * @param maxDimension 最大允许边长 / Maximum side length.
+ * @returns 适配后的宽高 / Fitted dimensions.
+ */
 function fitToMaxDimension(width: number, height: number, maxDimension: number) {
   if (width <= maxDimension && height <= maxDimension) {
     return { width, height };
@@ -37,6 +57,11 @@ function fitToMaxDimension(width: number, height: number, maxDimension: number) 
   };
 }
 
+/**
+ * 将本地文件读取为可渲染的 HTMLImageElement。/ Convert a local file into an HTMLImageElement.
+ * @param file 图片文件 / Image file.
+ * @returns 异步返回加载完成的图片元素 / Promise that resolves to a loaded image element.
+ */
 export function fileToImage(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
@@ -53,6 +78,13 @@ export function fileToImage(file: File): Promise<HTMLImageElement> {
   });
 }
 
+/**
+ * 将图片转换为像素网格。/ Convert an image into a pixel grid.
+ * @param image 源图片元素 / Source image element.
+ * @param pixelSize 网格像素尺寸 / Pixel block size.
+ * @param selectedPalette 目标调色板；为空时走动态量化 / Target palette; dynamic quantization when null.
+ * @returns 像素网格（颜色表 + 索引）/ Pixel grid with palette and indices.
+ */
 export function imageToPixelGrid(
   image: HTMLImageElement,
   pixelSize: number,
@@ -139,6 +171,12 @@ export function imageToPixelGrid(
   };
 }
 
+/**
+ * 为导出把画布按整数倍放大，保持像素边缘锐利。/ Scale canvas for export using integer factor with nearest-neighbor style.
+ * @param source 源画布 / Source canvas.
+ * @param targetMaxSide 导出目标最大边长 / Target maximum side length.
+ * @returns 放大后的画布；若无需放大则返回原画布 / Scaled canvas or original canvas when no scaling needed.
+ */
 export function scaleCanvasForExport(
   source: HTMLCanvasElement,
   targetMaxSide = DEFAULT_EXPORT_MAX_SIDE,

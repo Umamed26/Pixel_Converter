@@ -1,4 +1,4 @@
-// Desktop shortcut icons rendered on the wallpaper layer.
+// 桌面图标组件：提供快捷入口。/ Desktop icon component: provides shortcut launchers.
 interface DesktopIconsProps {
   t: (key: string) => string;
   onOpenAbout: () => void;
@@ -6,6 +6,10 @@ interface DesktopIconsProps {
   onOpenChangelog: () => void;
 }
 
+/**
+ * 文档图标。/ Icon for the About/Readme shortcut.
+ * @returns SVG 图标节点 / SVG icon node.
+ */
 function ReadmeIcon() {
   return (
     <svg width="36" height="36" viewBox="0 0 36 36" shapeRendering="crispEdges" aria-hidden="true">
@@ -24,6 +28,10 @@ function ReadmeIcon() {
   );
 }
 
+/**
+ * 文档页图标。/ Icon for the docs shortcut.
+ * @returns SVG 图标节点 / SVG icon node.
+ */
 function HomepageIcon() {
   return (
     <svg width="36" height="36" viewBox="0 0 36 36" shapeRendering="crispEdges" aria-hidden="true">
@@ -40,6 +48,10 @@ function HomepageIcon() {
   );
 }
 
+/**
+ * 回收站风格图标。/ Recycle-bin style icon for changelog shortcut.
+ * @returns SVG 图标节点 / SVG icon node.
+ */
 function TrashIcon() {
   return (
     <svg width="32" height="32" viewBox="0 0 32 32" shapeRendering="crispEdges" aria-hidden="true">
@@ -57,6 +69,11 @@ function TrashIcon() {
   );
 }
 
+/**
+ * 渲染桌面快捷图标区域。/ Render desktop shortcut icon areas.
+ * @param props 图标文案与事件回调 / Icon labels and callback handlers.
+ * @returns 桌面图标节点 / Desktop icon JSX.
+ */
 export function DesktopIcons({ t, onOpenAbout, onOpenDocs, onOpenChangelog }: DesktopIconsProps) {
   return (
     <>

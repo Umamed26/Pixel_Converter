@@ -1,4 +1,4 @@
-// Taskbar UI: start menu, grouped window buttons, tray tools, and language selector.
+// 任务栏组件：开始菜单、窗口分组按钮与托盘区。/ Taskbar component: start menu, grouped windows, and tray controls.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Lang } from "../types";
 
@@ -103,6 +103,11 @@ export function Taskbar({
     };
   }, []);
 
+  /**
+   * 从任务栏切换窗口状态，并在最小化时播放过渡动画。/ Toggle a window from taskbar with minimize transition.
+   * @param item 窗口项 / Target window item.
+   * @returns 无返回值 / No return value.
+   */
   const toggleWindowFromTaskbar = (item: TaskWindowItem) => {
     onCloseStartMenu();
     setGroupMenuOpen(false);
@@ -129,6 +134,11 @@ export function Taskbar({
     });
   };
 
+  /**
+   * 执行开始菜单动作并关闭菜单。/ Run a start-menu action then close menus.
+   * @param action 菜单动作 / Start menu action.
+   * @returns 无返回值 / No return value.
+   */
   const runStartAction = (action: StartMenuAction) => {
     if (action.disabled) {
       return;
@@ -142,6 +152,10 @@ export function Taskbar({
     return appName.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "PW";
   }, [appName]);
 
+  /**
+   * 渲染任务栏主体。/ Render taskbar shell.
+   * @returns 任务栏 JSX / Taskbar JSX.
+   */
   return (
     <footer className="taskbar">
       <button

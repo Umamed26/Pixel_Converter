@@ -1,9 +1,14 @@
-// Immutable config: palettes, UI string tables, effect lists, and language options.
+// 常量配置：调色板、文案、效果列表与语言选项。/ Static config: palettes, strings, effects, and language options.
 import type { Lang, PaletteColor } from "../types";
 import { BRAND } from "./brand";
 
 const ALL_LANGS: Lang[] = ["zh-CN", "en"];
 
+/**
+ * 生成所有语言同名映射。/ Build a same-label map for all supported languages.
+ * @param label 文本标签 / Label text.
+ * @returns 语言到文本的映射 / Language-to-label map.
+ */
 const sameName = (label: string): Record<Lang, string> => {
   const entries = ALL_LANGS.map((lang) => [lang, label]);
   return Object.fromEntries(entries) as Record<Lang, string>;

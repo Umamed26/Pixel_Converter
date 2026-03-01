@@ -1,4 +1,4 @@
-// Frame renderer: draws pixel grid, applies FX chain, and overlays dialog styles.
+// 帧渲染器：绘制像素网格、执行 FX 链并叠加对话框。/ Frame renderer: draws grid, runs FX chain, and overlays dialogs.
 import type { DialogState, EffectsState, EffectTuning, MaskState, PixelGrid } from "../types";
 
 type FrameColor = string | null;
@@ -164,26 +164,61 @@ const DIALOG_THEME_CONFIG: Record<DialogState["style"], DialogThemeConfig> = {
 
 const EFFECT_TICK_MS = 120;
 
+/**
+ * 限制数值到区间。/ Clamp number into range.
+ * @param value 输入值 / Input value.
+ * @param min 最小值 / Lower bound.
+ * @param max 最大值 / Upper bound.
+ * @returns 限制后的值 / Clamped value.
+ */
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/**
+ * 将百分比参数限制到安全范围。/ Clamp percentage parameter into safe range.
+ * @param value 百分比值 / Percentage value.
+ * @param min 最小百分比 / Minimum percentage.
+ * @param max 最大百分比 / Maximum percentage.
+ * @returns 规范化百分比 / Normalized percentage.
+ */
 function clampPercent(value: number, min = 0, max = 300): number {
   return clamp(value, min, max);
 }
 
+/**
+ * 百分比转强度系数。/ Convert percentage into strength factor.
+ * @param percent 百分比 / Percentage.
+ * @returns 强度系数 / Strength scale.
+ */
 function toStrength(percent: number): number {
   return clampPercent(percent) / 100;
 }
 
+/**
+ * 百分比转速度倍率。/ Convert percentage into speed scale.
+ * @param percent 百分比 / Percentage.
+ * @returns 速度倍率 / Speed scale.
+ */
 function toSpeedScale(percent: number): number {
   return clampPercent(percent, 10, 400) / 100;
 }
 
+/**
+ * 按速度缩放离散 tick。/ Scale discrete tick by speed setting.
+ * @param baseTick 基础 tick / Base tick.
+ * @param speedPercent 速度百分比 / Speed percentage.
+ * @returns 缩放后 tick / Scaled tick.
+ */
 function scaleTick(baseTick: number, speedPercent: number): number {
   return Math.floor(baseTick * toSpeedScale(speedPercent));
 }
 
+/**
+ * 构造可复现伪随机生成器。/ Create deterministic pseudo-random generator.
+ * @param seed 随机种子 / Seed value.
+ * @returns 生成 [0,1) 浮点数的函数 / Generator returning [0,1) values.
+ */
 function createSeededRandom(seed: number): () => number {
   let state = (seed >>> 0) || 1;
   return () => {
@@ -192,6 +227,12 @@ function createSeededRandom(seed: number): () => number {
   };
 }
 
+/**
+ * 将网格索引绘制到画布。/ Draw indexed pixel grid to canvas.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param grid 像素网格 / Pixel grid.
+ * @returns 无返回值 / No return value.
+ */
 function drawGrid(ctx: CanvasRenderingContext2D, grid: PixelGrid): void {
   const { width, height, pixelSize, indices, colors } = grid;
   if (!colors.length) {
@@ -209,6 +250,13 @@ function drawGrid(ctx: CanvasRenderingContext2D, grid: PixelGrid): void {
   }
 }
 
+/**
+ * 判断某个效果是否应受蒙版约束。/ Decide whether an effect should be masked.
+ * @param mask 当前蒙版状态 / Current mask state.
+ * @param effectKey 效果键 / Effect key.
+ * @param grid 当前网格 / Current grid.
+ * @returns 是否启用局部蒙版 / True when masked effect should be applied.
+ */
 function shouldUseEffectMask(mask: MaskState, effectKey: keyof EffectsState, grid: PixelGrid): boolean {
   return Boolean(
     mask.enabled
@@ -220,6 +268,14 @@ function shouldUseEffectMask(mask: MaskState, effectKey: keyof EffectsState, gri
   );
 }
 
+/**
+ * 将效果前后图像按蒙版合并。/ Merge before/after images with mask gating.
+ * @param before 应用前图像 / Image before effect.
+ * @param after 应用后图像 / Image after effect.
+ * @param maskData 蒙版位图 / Mask bitmap data.
+ * @param grid 当前网格信息 / Current grid metadata.
+ * @returns 无返回值 / No return value.
+ */
 function mergeMaskedEffectResult(
   before: ImageData,
   after: ImageData,
@@ -248,6 +304,16 @@ function mergeMaskedEffectResult(
   }
 }
 
+/**
+ * 在“全局生效”和“蒙版局部生效”之间自动切换效果执行。/ Run effect globally or masked by current mask settings.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param canvas 目标画布 / Target canvas.
+ * @param grid 当前网格 / Current grid.
+ * @param mask 当前蒙版 / Current mask.
+ * @param effectKey 效果键 / Effect key.
+ * @param applyEffect 实际效果执行函数 / Effect callback.
+ * @returns 无返回值 / No return value.
+ */
 function applyEffectWithOptionalMask(
   ctx: CanvasRenderingContext2D,
   canvas: HTMLCanvasElement,
@@ -268,6 +334,16 @@ function applyEffectWithOptionalMask(
   ctx.putImageData(after, 0, 0);
 }
 
+/**
+ * 故障条纹效果（通道错位 + 行偏移）。/ Apply glitch effect (channel shift + scanline offsets).
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param pixelSize 像素块尺寸 / Pixel size.
+ * @param baseTick 基础 tick / Base tick.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
 function applyGlitch(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -335,6 +411,14 @@ function applyGlitch(
   ctx.putImageData(new ImageData(shifted, width, height), 0, 0);
 }
 
+/**
+ * CRT 效果（扫描线 + 轻微色偏）。/ Apply CRT effect (scanlines and slight chromatic offset).
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
 function applyCrt(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -367,10 +451,27 @@ function applyCrt(
   ctx.putImageData(imageData, 0, 0);
 }
 
+/**
+ * 将 RGB 三通道编码为整型键。/ Encode RGB into an integer map key.
+ * @param r 红色通道 / Red channel.
+ * @param g 绿色通道 / Green channel.
+ * @param b 蓝色通道 / Blue channel.
+ * @returns 编码键 / Encoded key.
+ */
 function encodeRgbKey(r: number, g: number, b: number): number {
   return (r << 16) | (g << 8) | b;
 }
 
+/**
+ * 调色板循环效果。/ Apply palette-cycling effect.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param palette 当前调色板 / Active palette.
+ * @param baseTick 基础 tick / Base tick.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
 function applyPaletteCycle(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -411,6 +512,15 @@ function applyPaletteCycle(
   ctx.putImageData(imageData, 0, 0);
 }
 
+/**
+ * 残影拖尾效果。/ Apply ghost trail effect.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param baseTick 基础 tick / Base tick.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
 function applyGhostTrail(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -458,6 +568,15 @@ const DITHER_MATRIX = [
   [15, 7, 13, 5],
 ] as const;
 
+/**
+ * 抖动淡出效果。/ Apply dither fade effect.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param baseTick 基础 tick / Base tick.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
 function applyDitherFade(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -490,6 +609,16 @@ function applyDitherFade(
   ctx.putImageData(imageData, 0, 0);
 }
 
+/**
+ * 波浪扭曲效果。/ Apply horizontal wave warp effect.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param pixelSize 像素块尺寸 / Pixel size.
+ * @param baseTick 基础 tick / Base tick.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
 function applyWaveWarp(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -527,6 +656,13 @@ function applyWaveWarp(
   ctx.putImageData(imageData, 0, 0);
 }
 
+/**
+ * 按宽度限制自动换行。/ Wrap plain text lines by maximum width.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param text 原始文本 / Raw text.
+ * @param maxWidth 最大行宽 / Maximum line width.
+ * @returns 换行后的行数组 / Wrapped lines.
+ */
 function wrapTextLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
   const lines: string[] = [];
   let line = "";
@@ -553,6 +689,14 @@ function wrapTextLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: nu
   return lines;
 }
 
+/**
+ * 终端风格换行（首行保留前缀宽度）。/ Wrap terminal lines with first-line prompt offset.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param text 原始文本 / Raw text.
+ * @param maxWidth 最大行宽 / Maximum line width.
+ * @param promptPrefix 提示符前缀 / Prompt prefix.
+ * @returns 换行后的行数组 / Wrapped lines.
+ */
 function wrapTerminalLines(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -586,6 +730,13 @@ function wrapTerminalLines(
   return lines;
 }
 
+/**
+ * 计算对话框顶部 Y 坐标。/ Compute dialog top Y coordinate.
+ * @param canvasHeight 画布高度 / Canvas height.
+ * @param position 位置百分比 / Position percentage.
+ * @param dialogHeight 对话框高度 / Dialog height.
+ * @returns 顶部 Y 坐标 / Top Y coordinate.
+ */
 function getDialogTop(canvasHeight: number, position: number, dialogHeight: number): number {
   const rawTop = Math.round((canvasHeight * position) / 100) - dialogHeight;
   return clamp(rawTop, 0, Math.max(0, canvasHeight - dialogHeight));
@@ -983,6 +1134,19 @@ function drawDialog(
   drawDialogFramed(ctx, canvas, dialog, visibleText, visibleCount, timeMs, config);
 }
 
+/**
+ * 主渲染入口：按固定顺序绘制网格、FX 与对话框。/ Main frame renderer: draws grid, applies FX in order, then dialog.
+ * @param canvas 输出画布 / Output canvas.
+ * @param grid 像素网格 / Pixel grid.
+ * @param effects 效果开关 / Effect toggles.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @param mask 蒙版状态 / Mask state.
+ * @param dialog 对话框状态 / Dialog state.
+ * @param revealCount 当前可见字符数 / Visible character count.
+ * @param _ghostImage 保留参数（兼容接口）/ Reserved parameter for interface compatibility.
+ * @param timeMs 当前时间戳（毫秒）/ Current time in milliseconds.
+ * @returns 无返回值 / No return value.
+ */
 export function renderFrame(
   canvas: HTMLCanvasElement,
   grid: PixelGrid,
