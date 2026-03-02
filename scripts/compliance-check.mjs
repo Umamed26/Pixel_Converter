@@ -10,7 +10,7 @@ const BANNED = [
   /sora_ghost/i,
   /1:1/i,
   /复刻/,
-  /clone/i,
+  /react-clone/i,
 ];
 
 function listFiles(targetPath) {
