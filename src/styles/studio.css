@@ -175,6 +175,23 @@ body {
   font-size: 12px;
 }
 
+.mode-switch {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mode-switch__label {
+  font-size: 10px;
+  color: #2c4d7d;
+  font-weight: 700;
+}
+
+.mode-switch .retro-btn {
+  min-width: 58px;
+}
+
 .main-body {
   display: grid;
   grid-template-columns: 238px 1fr;
@@ -1559,6 +1576,11 @@ input[type="range"]::-moz-range-thumb {
   .taskbar {
     gap: 4px;
     padding: 4px;
+  }
+
+  .mode-switch {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 

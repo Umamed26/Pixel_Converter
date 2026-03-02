@@ -11,6 +11,10 @@ import { usePixelConverter } from "./hooks/usePixelConverter";
 import type { DialogState } from "./types";
 import "./styles/studio.css";
 
+type UiMode = "basic" | "advanced";
+
+const UI_MODE_STORAGE_KEY = "pixel_workshop_ui_mode_v1";
+
 function App() {
   const {
     t,
@@ -162,6 +166,10 @@ function App() {
   const [startMenuOpen, setStartMenuOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
   const [selectedGalleryId, setSelectedGalleryId] = useState<string | null>(null);
+  const [uiMode, setUiMode] = useState<UiMode>(() => {
+    const saved = window.localStorage.getItem(UI_MODE_STORAGE_KEY);
+    return saved === "advanced" ? "advanced" : "basic";
+  });
   const aboutRef = useRef<HTMLDialogElement>(null);
   const docsRef = useRef<HTMLDialogElement>(null);
   const changelogRef = useRef<HTMLDialogElement>(null);
@@ -175,10 +183,14 @@ function App() {
   const maskLassoPointsRef = useRef<Array<{ x: number; y: number }>>([]);
   const compareDragRef = useRef<{ x: number; y: number } | null>(null);
   const isLocalhost = window.location.hostname === "localhost";
+  const isAdvancedMode = uiMode === "advanced";
 
   const ghostMessages = useMemo(() => GHOST_MESSAGES[lang], [lang]);
   const paletteKeys = Object.keys(lists.palettes) as PaletteId[];
   const filteredGalleryItems = useMemo(() => {
+    if (!isAdvancedMode) {
+      return galleryItems;
+    }
     const keyword = gallerySearch.trim().toLowerCase();
     if (!keyword) {
       return galleryItems;
@@ -187,7 +199,7 @@ function App() {
       const haystack = `${item.name} ${item.tags.join(" ")}`.toLowerCase();
       return haystack.includes(keyword);
     });
-  }, [galleryItems, gallerySearch]);
+  }, [galleryItems, gallerySearch, isAdvancedMode]);
   const selectedGalleryItem = useMemo(
     () => filteredGalleryItems.find((item) => item.id === selectedGalleryId) ?? filteredGalleryItems[0] ?? null,
     [filteredGalleryItems, selectedGalleryId],
@@ -314,6 +326,20 @@ function App() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [startMenuOpen]);
+
+  useEffect(() => {
+    window.localStorage.setItem(UI_MODE_STORAGE_KEY, uiMode);
+  }, [uiMode]);
+
+  useEffect(() => {
+    if (isAdvancedMode) {
+      return;
+    }
+    setAnimationEnabled(false);
+    setMaskEnabled(false);
+    setPaletteEditorOpen(false);
+    setCompareEnabled(false);
+  }, [isAdvancedMode, setAnimationEnabled, setMaskEnabled]);
 
   const pressStart = useCallback(() => {
     setStartPressed(true);
@@ -629,6 +655,23 @@ function App() {
           <span>{t("menuEdit")}</span>
           <span>{t("menuView")}</span>
           <span>{t("menuHelp")}</span>
+          <div className="mode-switch" role="group" aria-label={t("modeTitle")}>
+            <span className="mode-switch__label">{t("modeTitle")}</span>
+            <button
+              type="button"
+              className={`retro-btn btn-mini ${uiMode === "basic" ? "is-active" : ""}`}
+              onClick={() => setUiMode("basic")}
+            >
+              {t("modeBasic")}
+            </button>
+            <button
+              type="button"
+              className={`retro-btn btn-mini ${uiMode === "advanced" ? "is-active" : ""}`}
+              onClick={() => setUiMode("advanced")}
+            >
+              {t("modeAdvanced")}
+            </button>
+          </div>
         </div>
 
         <section className="main-body">
@@ -667,16 +710,19 @@ function App() {
                   ))}
                 </div>
 
-                <label className="dialog-toggle perf-toggle">
-                  <input
-                    type="checkbox"
-                    checked={performanceMode}
-                    onChange={(event) => setPerformanceMode(event.target.checked)}
-                  />
-                  <span>{t("performanceMode")}</span>
-                </label>
+                {isAdvancedMode ? (
+                  <label className="dialog-toggle perf-toggle">
+                    <input
+                      type="checkbox"
+                      checked={performanceMode}
+                      onChange={(event) => setPerformanceMode(event.target.checked)}
+                    />
+                    <span>{t("performanceMode")}</span>
+                  </label>
+                ) : null}
 
-                <div className="fx-tuning">
+                {isAdvancedMode ? (
+                  <div className="fx-tuning">
                   {effects.glitch ? (
                     <div className="fx-tuning-row">
                       <span className="fx-tuning-title">{t("effect_glitch")}</span>
@@ -822,11 +868,13 @@ function App() {
                       </label>
                     </div>
                   ) : null}
-                </div>
+                  </div>
+                ) : null}
               </div>
             </section>
 
-            <section className="tool-window">
+            {isAdvancedMode ? (
+              <section className="tool-window">
               <header>
                 <span>{t("animationTitle")}</span>
                 <WindowControls />
@@ -884,7 +932,8 @@ function App() {
                   </button>
                 </div>
               </div>
-            </section>
+              </section>
+            ) : null}
 
             <section className="tool-window">
               <header>
@@ -915,140 +964,144 @@ function App() {
                     );
                   })}
                 </div>
-                <div className="palette-tools">
-                  <button
-                    type="button"
-                    className={`retro-btn btn-mini ${paletteEditorOpen ? "is-active" : ""}`}
-                    onClick={() => setPaletteEditorOpen((value) => !value)}
-                  >
-                    {t("paletteEditor")}
-                  </button>
-                  <button type="button" className="retro-btn btn-mini" onClick={onExportPalette}>
-                    {t("paletteExport")}
-                  </button>
-                  <button
-                    type="button"
-                    className="retro-btn btn-mini"
-                    onClick={() => paletteInputRef.current?.click()}
-                  >
-                    {t("paletteImport")}
-                  </button>
-                  <button type="button" className="retro-btn btn-mini" onClick={resetCurrentPalette}>
-                    {t("paletteReset")}
-                  </button>
-                  <input
-                    ref={paletteInputRef}
-                    type="file"
-                    accept=".json,application/json"
-                    hidden
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) {
-                        void onImportPalette(file);
-                      }
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                </div>
-                <div className="palette-smart-controls">
-                  <label className="dialog-advanced__label">
-                    <span>{t("paletteExtractCount")} {paletteExtractCount}</span>
-                    <input
-                      type="range"
-                      min={1}
-                      max={Math.max(1, currentPaletteColors.length)}
-                      value={Math.min(paletteExtractCount, Math.max(1, currentPaletteColors.length))}
-                      onChange={(event) => setPaletteExtractCount(Number(event.target.value))}
-                    />
-                  </label>
-                  <label className="dialog-advanced__label">
-                    <span>{t("paletteMergeThreshold")} {paletteMergeThreshold}</span>
-                    <input
-                      type="range"
-                      min={2}
-                      max={96}
-                      value={paletteMergeThreshold}
-                      onChange={(event) => setPaletteMergeThreshold(Number(event.target.value))}
-                    />
-                  </label>
-                  <div className="tiny-grid">
-                    <button
-                      type="button"
-                      className="retro-btn btn-mini"
-                      onClick={() => extractPaletteFromSource(paletteExtractCount)}
-                      disabled={!sourcePreviewUrl}
-                    >
-                      {t("paletteExtract")}
-                    </button>
-                    <button
-                      type="button"
-                      className="retro-btn btn-mini"
-                      onClick={() => mergeCurrentPaletteSimilar(paletteMergeThreshold)}
-                    >
-                      {t("paletteMerge")}
-                    </button>
-                    <button type="button" className="retro-btn btn-mini" onClick={clearPaletteLocks}>
-                      {t("paletteUnlockAll")}
-                    </button>
-                  </div>
-                </div>
-                {paletteEditorOpen ? (
-                  <div className="palette-editor">
-                    <div className="palette-editor__title">
-                      {t("paletteEditor")} ({currentPaletteColors.length})
+                {isAdvancedMode ? (
+                  <>
+                    <div className="palette-tools">
+                      <button
+                        type="button"
+                        className={`retro-btn btn-mini ${paletteEditorOpen ? "is-active" : ""}`}
+                        onClick={() => setPaletteEditorOpen((value) => !value)}
+                      >
+                        {t("paletteEditor")}
+                      </button>
+                      <button type="button" className="retro-btn btn-mini" onClick={onExportPalette}>
+                        {t("paletteExport")}
+                      </button>
+                      <button
+                        type="button"
+                        className="retro-btn btn-mini"
+                        onClick={() => paletteInputRef.current?.click()}
+                      >
+                        {t("paletteImport")}
+                      </button>
+                      <button type="button" className="retro-btn btn-mini" onClick={resetCurrentPalette}>
+                        {t("paletteReset")}
+                      </button>
+                      <input
+                        ref={paletteInputRef}
+                        type="file"
+                        accept=".json,application/json"
+                        hidden
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file) {
+                            void onImportPalette(file);
+                          }
+                          event.currentTarget.value = "";
+                        }}
+                      />
                     </div>
-                    <div className="palette-editor__list">
-                      {currentPaletteColors.map((color, index) => (
-                        <div key={`${palette}-${index}`} className="palette-editor__item">
-                          <span className="palette-editor__index">#{index}</span>
-                          <input
-                            type="color"
-                            value={`#${color[0].toString(16).padStart(2, "0")}${color[1].toString(16).padStart(2, "0")}${color[2].toString(16).padStart(2, "0")}`}
-                            onChange={(event) => {
-                              const hex = event.target.value;
-                              updateCurrentPaletteColor(index, [
-                                Number.parseInt(hex.slice(1, 3), 16),
-                                Number.parseInt(hex.slice(3, 5), 16),
-                                Number.parseInt(hex.slice(5, 7), 16),
-                              ]);
-                            }}
-                          />
-                          {[0, 1, 2].map((channel) => (
-                            <input
-                              key={`${index}-${channel}`}
-                              type="number"
-                              min={0}
-                              max={255}
-                              value={color[channel]}
-                              onChange={(event) => {
-                                const next = [...color] as [number, number, number];
-                                next[channel] = Number(event.target.value);
-                                updateCurrentPaletteColor(index, next);
-                              }}
-                            />
-                          ))}
-                          <button
-                            type="button"
-                            className="retro-btn btn-mini"
-                            onClick={() => togglePaletteLock(index)}
-                          >
-                            {paletteLocks[index] ? t("paletteUnlock") : t("paletteLock")}
-                          </button>
-                          <button
-                            type="button"
-                            className="retro-btn btn-mini"
-                            onClick={() => removeCurrentPaletteColor(index)}
-                            disabled={currentPaletteColors.length <= 1}
-                          >
-                            -
-                          </button>
+                    <div className="palette-smart-controls">
+                      <label className="dialog-advanced__label">
+                        <span>{t("paletteExtractCount")} {paletteExtractCount}</span>
+                        <input
+                          type="range"
+                          min={1}
+                          max={Math.max(1, currentPaletteColors.length)}
+                          value={Math.min(paletteExtractCount, Math.max(1, currentPaletteColors.length))}
+                          onChange={(event) => setPaletteExtractCount(Number(event.target.value))}
+                        />
+                      </label>
+                      <label className="dialog-advanced__label">
+                        <span>{t("paletteMergeThreshold")} {paletteMergeThreshold}</span>
+                        <input
+                          type="range"
+                          min={2}
+                          max={96}
+                          value={paletteMergeThreshold}
+                          onChange={(event) => setPaletteMergeThreshold(Number(event.target.value))}
+                        />
+                      </label>
+                      <div className="tiny-grid">
+                        <button
+                          type="button"
+                          className="retro-btn btn-mini"
+                          onClick={() => extractPaletteFromSource(paletteExtractCount)}
+                          disabled={!sourcePreviewUrl}
+                        >
+                          {t("paletteExtract")}
+                        </button>
+                        <button
+                          type="button"
+                          className="retro-btn btn-mini"
+                          onClick={() => mergeCurrentPaletteSimilar(paletteMergeThreshold)}
+                        >
+                          {t("paletteMerge")}
+                        </button>
+                        <button type="button" className="retro-btn btn-mini" onClick={clearPaletteLocks}>
+                          {t("paletteUnlockAll")}
+                        </button>
+                      </div>
+                    </div>
+                    {paletteEditorOpen ? (
+                      <div className="palette-editor">
+                        <div className="palette-editor__title">
+                          {t("paletteEditor")} ({currentPaletteColors.length})
                         </div>
-                      ))}
-                    </div>
-                    <button type="button" className="retro-btn btn-mini" onClick={addCurrentPaletteColor}>
-                      {t("paletteAddColor")}
-                    </button>
-                  </div>
+                        <div className="palette-editor__list">
+                          {currentPaletteColors.map((color, index) => (
+                            <div key={`${palette}-${index}`} className="palette-editor__item">
+                              <span className="palette-editor__index">#{index}</span>
+                              <input
+                                type="color"
+                                value={`#${color[0].toString(16).padStart(2, "0")}${color[1].toString(16).padStart(2, "0")}${color[2].toString(16).padStart(2, "0")}`}
+                                onChange={(event) => {
+                                  const hex = event.target.value;
+                                  updateCurrentPaletteColor(index, [
+                                    Number.parseInt(hex.slice(1, 3), 16),
+                                    Number.parseInt(hex.slice(3, 5), 16),
+                                    Number.parseInt(hex.slice(5, 7), 16),
+                                  ]);
+                                }}
+                              />
+                              {[0, 1, 2].map((channel) => (
+                                <input
+                                  key={`${index}-${channel}`}
+                                  type="number"
+                                  min={0}
+                                  max={255}
+                                  value={color[channel]}
+                                  onChange={(event) => {
+                                    const next = [...color] as [number, number, number];
+                                    next[channel] = Number(event.target.value);
+                                    updateCurrentPaletteColor(index, next);
+                                  }}
+                                />
+                              ))}
+                              <button
+                                type="button"
+                                className="retro-btn btn-mini"
+                                onClick={() => togglePaletteLock(index)}
+                              >
+                                {paletteLocks[index] ? t("paletteUnlock") : t("paletteLock")}
+                              </button>
+                              <button
+                                type="button"
+                                className="retro-btn btn-mini"
+                                onClick={() => removeCurrentPaletteColor(index)}
+                                disabled={currentPaletteColors.length <= 1}
+                              >
+                                -
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        <button type="button" className="retro-btn btn-mini" onClick={addCurrentPaletteColor}>
+                          {t("paletteAddColor")}
+                        </button>
+                      </div>
+                    ) : null}
+                  </>
                 ) : null}
               </div>
             </section>
@@ -1094,52 +1147,54 @@ function App() {
                       onChange={(event) => patchDialog({ text: event.target.value })}
                       placeholder={t("dialogText")}
                     />
-                    <div className="dialog-advanced">
-                      <div className="dialog-advanced__title">{t("dialogAdvanced")}</div>
-                      <div className="dialog-page-row">
-                        <button type="button" className="retro-btn btn-mini" onClick={prevDialogPage}>
-                          {t("dialogPrev")}
-                        </button>
-                        <span>
-                          {t("dialogPage")} {currentDialogPage + 1} / {dialogPages.length}
-                        </span>
-                        <button type="button" className="retro-btn btn-mini" onClick={nextDialogPage}>
-                          {t("dialogNext")}
-                        </button>
-                      </div>
-                      <label className="dialog-advanced__label">
-                        <span>{t("dialogTypingSpeed")} {dialog.typingSpeed}%</span>
-                        <input
-                          type="range"
-                          min={25}
-                          max={300}
-                          value={dialog.typingSpeed}
-                          onChange={(event) => patchDialog({ typingSpeed: Number(event.target.value) })}
-                        />
-                      </label>
-                      <label className="dialog-toggle">
-                        <input
-                          type="checkbox"
-                          checked={dialog.autoPage}
-                          onChange={(event) => patchDialog({ autoPage: event.target.checked })}
-                        />
-                        <span>{t("dialogAutoPage")}</span>
-                      </label>
-                      {dialog.autoPage ? (
+                    {isAdvancedMode ? (
+                      <div className="dialog-advanced">
+                        <div className="dialog-advanced__title">{t("dialogAdvanced")}</div>
+                        <div className="dialog-page-row">
+                          <button type="button" className="retro-btn btn-mini" onClick={prevDialogPage}>
+                            {t("dialogPrev")}
+                          </button>
+                          <span>
+                            {t("dialogPage")} {currentDialogPage + 1} / {dialogPages.length}
+                          </span>
+                          <button type="button" className="retro-btn btn-mini" onClick={nextDialogPage}>
+                            {t("dialogNext")}
+                          </button>
+                        </div>
                         <label className="dialog-advanced__label">
-                          <span>{t("dialogAutoDelay")} {dialog.autoPageDelay}ms</span>
+                          <span>{t("dialogTypingSpeed")} {dialog.typingSpeed}%</span>
                           <input
                             type="range"
-                            min={300}
-                            max={4000}
-                            step={100}
-                            value={dialog.autoPageDelay}
-                            onChange={(event) => patchDialog({ autoPageDelay: Number(event.target.value) })}
+                            min={25}
+                            max={300}
+                            value={dialog.typingSpeed}
+                            onChange={(event) => patchDialog({ typingSpeed: Number(event.target.value) })}
                           />
                         </label>
-                      ) : null}
-                      <small>{t("dialogPageHint")}</small>
-                    </div>
+                        <label className="dialog-toggle">
+                          <input
+                            type="checkbox"
+                            checked={dialog.autoPage}
+                            onChange={(event) => patchDialog({ autoPage: event.target.checked })}
+                          />
+                          <span>{t("dialogAutoPage")}</span>
+                        </label>
+                        {dialog.autoPage ? (
+                          <label className="dialog-advanced__label">
+                            <span>{t("dialogAutoDelay")} {dialog.autoPageDelay}ms</span>
+                            <input
+                              type="range"
+                              min={300}
+                              max={4000}
+                              step={100}
+                              value={dialog.autoPageDelay}
+                              onChange={(event) => patchDialog({ autoPageDelay: Number(event.target.value) })}
+                            />
+                          </label>
+                        ) : null}
+                        <small>{t("dialogPageHint")}</small>
+                      </div>
+                    ) : null}
                     <div className="dialog-position-presets">
                       {[25, 50, 70, 90].map((value) => (
                         <button
@@ -1169,7 +1224,8 @@ function App() {
               </div>
             </section>
 
-            <section className="tool-window">
+            {isAdvancedMode ? (
+              <section className="tool-window">
               <header>
                 <span>{t("maskTitle")}</span>
                 <WindowControls />
@@ -1280,9 +1336,11 @@ function App() {
                   </div>
                 </div>
               </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="tool-window">
+            {isAdvancedMode ? (
+              <section className="tool-window">
               <header>
                 <span>{t("fxPipelineTitle")}</span>
                 <WindowControls />
@@ -1364,9 +1422,11 @@ function App() {
                   ))}
                 </div>
               </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="tool-window">
+            {isAdvancedMode ? (
+              <section className="tool-window">
               <header>
                 <span>{t("historyTitle")}</span>
                 <WindowControls />
@@ -1395,9 +1455,11 @@ function App() {
                   )}
                 </div>
               </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="tool-window">
+            {isAdvancedMode ? (
+              <section className="tool-window">
               <header>
                 <span>{t("presetTitle")}</span>
                 <WindowControls />
@@ -1495,7 +1557,8 @@ function App() {
                   )}
                 </div>
               </div>
-            </section>
+              </section>
+            ) : null}
           </aside>
 
           <section className="preview-column">
@@ -1608,100 +1671,106 @@ function App() {
                   >
                     {t("download")}
                   </button>
-                  <button
-                    type="button"
-                    className="retro-btn btn-mini"
-                    onClick={onPickBatchFiles}
-                    disabled={isRecording || isBatchProcessing}
-                  >
-                    {isBatchProcessing ? t("batchProcessing") : t("batchZip")}
-                  </button>
-                  <button
-                    type="button"
-                    className="retro-btn btn-mini"
-                    onClick={() => {
-                      void onDownloadGif();
-                    }}
-                    disabled={!grid || isRecording || isBatchProcessing}
-                  >
-                    {t("downloadGif")}
-                  </button>
-                  <button
-                    type="button"
-                    className="retro-btn btn-mini"
-                    onClick={() => {
-                      void onDownloadApng();
-                    }}
-                    disabled={!grid || isRecording || isBatchProcessing}
-                  >
-                    {t("downloadApng")}
-                  </button>
-                  {canRecordVideo ? (
-                    <button
-                      type="button"
-                      className="retro-btn btn-mini"
-                      onClick={() => {
-                        void onDownloadVideo();
-                      }}
-                      disabled={!grid || isRecording || isBatchProcessing}
-                    >
-                      {isRecording ? t("recording") : t("downloadVideo")}
-                    </button>
+                  {isAdvancedMode ? (
+                    <>
+                      <button
+                        type="button"
+                        className="retro-btn btn-mini"
+                        onClick={onPickBatchFiles}
+                        disabled={isRecording || isBatchProcessing}
+                      >
+                        {isBatchProcessing ? t("batchProcessing") : t("batchZip")}
+                      </button>
+                      <button
+                        type="button"
+                        className="retro-btn btn-mini"
+                        onClick={() => {
+                          void onDownloadGif();
+                        }}
+                        disabled={!grid || isRecording || isBatchProcessing}
+                      >
+                        {t("downloadGif")}
+                      </button>
+                      <button
+                        type="button"
+                        className="retro-btn btn-mini"
+                        onClick={() => {
+                          void onDownloadApng();
+                        }}
+                        disabled={!grid || isRecording || isBatchProcessing}
+                      >
+                        {t("downloadApng")}
+                      </button>
+                      {canRecordVideo ? (
+                        <button
+                          type="button"
+                          className="retro-btn btn-mini"
+                          onClick={() => {
+                            void onDownloadVideo();
+                          }}
+                          disabled={!grid || isRecording || isBatchProcessing}
+                        >
+                          {isRecording ? t("recording") : t("downloadVideo")}
+                        </button>
+                      ) : null}
+                    </>
                   ) : null}
                 </div>
-                <div className="batch-panel">
-                  <div className="export-settings-grid">
-                    <label>
-                      <span>{t("exportGifFps")} {gifFps}</span>
+                {isAdvancedMode ? (
+                  <div className="batch-panel">
+                    <div className="export-settings-grid">
+                      <label>
+                        <span>{t("exportGifFps")} {gifFps}</span>
+                        <input
+                          type="range"
+                          min={1}
+                          max={24}
+                          value={gifFps}
+                          onChange={(event) => setGifFps(Number(event.target.value))}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("exportApngFps")} {apngFps}</span>
+                        <input
+                          type="range"
+                          min={1}
+                          max={24}
+                          value={apngFps}
+                          onChange={(event) => setApngFps(Number(event.target.value))}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("exportLoopCount")} {exportLoopCount}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={99}
+                          value={exportLoopCount}
+                          onChange={(event) => setExportLoopCount(Number(event.target.value) || 0)}
+                        />
+                      </label>
+                    </div>
+                    <label className="batch-template">
+                      <span>{t("batchTemplate")}</span>
                       <input
-                        type="range"
-                        min={1}
-                        max={24}
-                        value={gifFps}
-                        onChange={(event) => setGifFps(Number(event.target.value))}
+                        type="text"
+                        value={batchNamingTemplate}
+                        onChange={(event) => setBatchNamingTemplate(event.target.value)}
+                        placeholder="{name}_pixel_{index}"
                       />
                     </label>
-                    <label>
-                      <span>{t("exportApngFps")} {apngFps}</span>
-                      <input
-                        type="range"
-                        min={1}
-                        max={24}
-                        value={apngFps}
-                        onChange={(event) => setApngFps(Number(event.target.value))}
-                      />
-                    </label>
-                    <label>
-                      <span>{t("exportLoopCount")} {exportLoopCount}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={99}
-                        value={exportLoopCount}
-                        onChange={(event) => setExportLoopCount(Number(event.target.value) || 0)}
-                      />
-                    </label>
+                    <div className="batch-progress">
+                      <span>{t("batchProgress")}</span>
+                      <span>{batchProgress.completed} / {batchProgress.total}</span>
+                      <span>F:{batchProgress.failed}</span>
+                      <span>R:{batchProgress.retries}</span>
+                      <span>{batchProgress.zipProgress}%</span>
+                    </div>
+                    {batchProgress.currentFile ? (
+                      <small className="batch-current">{batchProgress.currentFile}</small>
+                    ) : null}
                   </div>
-                  <label className="batch-template">
-                    <span>{t("batchTemplate")}</span>
-                    <input
-                      type="text"
-                      value={batchNamingTemplate}
-                      onChange={(event) => setBatchNamingTemplate(event.target.value)}
-                      placeholder="{name}_pixel_{index}"
-                    />
-                  </label>
-                  <div className="batch-progress">
-                    <span>{t("batchProgress")}</span>
-                    <span>{batchProgress.completed} / {batchProgress.total}</span>
-                    <span>F:{batchProgress.failed}</span>
-                    <span>R:{batchProgress.retries}</span>
-                    <span>{batchProgress.zipProgress}%</span>
-                  </div>
-                  {batchProgress.currentFile ? (
-                    <small className="batch-current">{batchProgress.currentFile}</small>
-                  ) : null}
-                </div>
+                ) : null}
               </div>
             </section>
 
@@ -1733,36 +1802,38 @@ function App() {
                     {t("galleryClear")}
                   </button>
                 </div>
-                <div className="gallery-toolbar">
-                  <input
-                    type="text"
-                    value={gallerySearch}
-                    onChange={(event) => setGallerySearch(event.target.value)}
-                    placeholder={t("gallerySearchPlaceholder")}
-                  />
-                  <button type="button" className="retro-btn btn-mini" onClick={toggleSelectAllFiltered}>
-                    {allFilteredSelected ? t("galleryUnselectAll") : t("gallerySelectAll")}
-                  </button>
-                  <button
-                    type="button"
-                    className="retro-btn btn-mini"
-                    disabled={galleryBulkIds.length === 0}
-                    onClick={() => downloadGalleryItemsBulk(galleryBulkIds)}
-                  >
-                    {t("galleryBulkDownload")}
-                  </button>
-                  <button
-                    type="button"
-                    className="retro-btn btn-mini"
-                    disabled={galleryBulkIds.length === 0}
-                    onClick={() => {
-                      void removeGalleryItemsBulk(galleryBulkIds);
-                      setGalleryBulkIds([]);
-                    }}
-                  >
-                    {t("galleryBulkDelete")}
-                  </button>
-                </div>
+                {isAdvancedMode ? (
+                  <div className="gallery-toolbar">
+                    <input
+                      type="text"
+                      value={gallerySearch}
+                      onChange={(event) => setGallerySearch(event.target.value)}
+                      placeholder={t("gallerySearchPlaceholder")}
+                    />
+                    <button type="button" className="retro-btn btn-mini" onClick={toggleSelectAllFiltered}>
+                      {allFilteredSelected ? t("galleryUnselectAll") : t("gallerySelectAll")}
+                    </button>
+                    <button
+                      type="button"
+                      className="retro-btn btn-mini"
+                      disabled={galleryBulkIds.length === 0}
+                      onClick={() => downloadGalleryItemsBulk(galleryBulkIds)}
+                    >
+                      {t("galleryBulkDownload")}
+                    </button>
+                    <button
+                      type="button"
+                      className="retro-btn btn-mini"
+                      disabled={galleryBulkIds.length === 0}
+                      onClick={() => {
+                        void removeGalleryItemsBulk(galleryBulkIds);
+                        setGalleryBulkIds([]);
+                      }}
+                    >
+                      {t("galleryBulkDelete")}
+                    </button>
+                  </div>
+                ) : null}
 
                 <div className="gallery-region">
                   {filteredGalleryItems.length > 0 ? (
@@ -1834,26 +1905,28 @@ function App() {
                               {t("galleryNext")}
                             </button>
                           </div>
-                          <div className="gallery-tag-editor">
-                            <input
-                              type="text"
-                              value={galleryTagDraft}
-                              onChange={(event) => setGalleryTagDraft(event.target.value)}
-                              placeholder={t("galleryTagsPlaceholder")}
-                            />
-                            <button type="button" className="retro-btn btn-mini" onClick={applyGalleryTagDraft}>
-                              {t("galleryTagsApply")}
-                            </button>
-                            <button
-                              type="button"
-                              className={`retro-btn btn-mini ${compareEnabled ? "is-active" : ""}`}
-                              onClick={() => setCompareEnabled((value) => !value)}
-                              disabled={!sourcePreviewUrl}
-                            >
-                              {t("compareToggle")}
-                            </button>
-                          </div>
-                          {compareEnabled && sourcePreviewUrl ? (
+                          {isAdvancedMode ? (
+                            <div className="gallery-tag-editor">
+                              <input
+                                type="text"
+                                value={galleryTagDraft}
+                                onChange={(event) => setGalleryTagDraft(event.target.value)}
+                                placeholder={t("galleryTagsPlaceholder")}
+                              />
+                              <button type="button" className="retro-btn btn-mini" onClick={applyGalleryTagDraft}>
+                                {t("galleryTagsApply")}
+                              </button>
+                              <button
+                                type="button"
+                                className={`retro-btn btn-mini ${compareEnabled ? "is-active" : ""}`}
+                                onClick={() => setCompareEnabled((value) => !value)}
+                                disabled={!sourcePreviewUrl}
+                              >
+                                {t("compareToggle")}
+                              </button>
+                            </div>
+                          ) : null}
+                          {isAdvancedMode && compareEnabled && sourcePreviewUrl ? (
                             <div className="compare-box">
                               <div className="compare-toolbar">
                                 <button type="button" className="retro-btn btn-mini" onClick={() => setCompareZoom((v) => Math.max(0.5, Number((v - 0.1).toFixed(2))))}>-</button>
