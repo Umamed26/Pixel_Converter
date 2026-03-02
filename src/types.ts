@@ -124,6 +124,7 @@ export interface ProjectStateV1 {
   selectedPresetId: string | null;
   batchNamingTemplate: string;
   performanceMode: boolean;
+  effectPipelineOrder?: Array<keyof EffectsState>;
   animation?: AnimationState;
   gridSnapshot: PixelGridSnapshot | null;
 }

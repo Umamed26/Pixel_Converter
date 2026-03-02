@@ -34,6 +34,15 @@ function normalizeBrushSize(value: number): number {
 }
 
 /**
+ * 规范化羽化半径（网格像素）。/ Normalize feather radius in grid cells.
+ * @param value 原始羽化值 / Raw feather value.
+ * @returns 规范化羽化值 / Normalized feather value.
+ */
+function normalizeFeather(value: number): number {
+  return Math.max(0, Math.floor(value));
+}
+
+/**
  * 在目标蒙版数据中盖章一个圆形笔刷。/ Stamp a circular brush into target mask data.
  * @param target 目标蒙版数组 / Target mask buffer.
  * @param width 蒙版宽度 / Mask width.
@@ -68,6 +77,78 @@ function stampCircle(
       }
     }
   }
+}
+
+/**
+ * 在写入蒙版时按模式与权重混合。/ Blend one mask value by mode and weight.
+ * @param current 当前值 / Current value.
+ * @param mode 模式（涂抹或擦除）/ Mode (paint or erase).
+ * @param alpha 目标权重 0..1 / Target alpha in 0..1.
+ * @returns 混合后的值 / Blended value.
+ */
+function blendMaskValue(current: number, mode: "paint" | "erase", alpha: number): number {
+  const clampedAlpha = clamp(alpha, 0, 1);
+  const target = mode === "paint" ? 255 : 0;
+  return Math.round(current + (target - current) * clampedAlpha);
+}
+
+/**
+ * 计算点到线段的最短距离。/ Compute shortest distance from a point to a segment.
+ * @param px 点 X / Point X.
+ * @param py 点 Y / Point Y.
+ * @param ax 线段起点 X / Segment start X.
+ * @param ay 线段起点 Y / Segment start Y.
+ * @param bx 线段终点 X / Segment end X.
+ * @param by 线段终点 Y / Segment end Y.
+ * @returns 最短距离 / Shortest distance.
+ */
+function distancePointToSegment(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const apx = px - ax;
+  const apy = py - ay;
+  const abLenSq = abx * abx + aby * aby;
+  if (abLenSq <= 1e-6) {
+    const dx = px - ax;
+    const dy = py - ay;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  const t = clamp((apx * abx + apy * aby) / abLenSq, 0, 1);
+  const cx = ax + abx * t;
+  const cy = ay + aby * t;
+  const dx = px - cx;
+  const dy = py - cy;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/**
+ * 判断点是否在多边形内部。/ Check whether a point is inside polygon.
+ * @param x 点 X / Point X.
+ * @param y 点 Y / Point Y.
+ * @param points 多边形顶点 / Polygon points.
+ * @returns 是否在内部 / True when inside polygon.
+ */
+function isPointInPolygon(x: number, y: number, points: MaskPoint[]): boolean {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const xi = points[i].x;
+    const yi = points[i].y;
+    const xj = points[j].x;
+    const yj = points[j].y;
+    const intersect = ((yi > y) !== (yj > y))
+      && (x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-6) + xi);
+    if (intersect) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }
 
 /**
@@ -140,6 +221,154 @@ export function invertMaskData(source: Uint8Array): Uint8Array {
   const next = new Uint8Array(source.length);
   for (let i = 0; i < source.length; i += 1) {
     next[i] = source[i] > 0 ? 0 : 255;
+  }
+  return next;
+}
+
+/**
+ * 应用矩形蒙版工具（支持羽化边缘）。/ Apply rectangular mask tool with optional feather.
+ * @param source 源蒙版数据 / Source mask data.
+ * @param width 蒙版宽度 / Mask width.
+ * @param height 蒙版高度 / Mask height.
+ * @param start 起点 / Start point.
+ * @param end 终点 / End point.
+ * @param mode 模式（涂抹或擦除）/ Mode (paint or erase).
+ * @param feather 羽化半径（网格像素）/ Feather radius in grid cells.
+ * @returns 新蒙版副本 / New mask buffer.
+ */
+export function applyMaskRectangle(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  start: MaskPoint,
+  end: MaskPoint,
+  mode: "paint" | "erase",
+  feather = 0,
+): Uint8Array {
+  const safeWidth = normalizeDimension(width);
+  const safeHeight = normalizeDimension(height);
+  const expected = safeWidth * safeHeight;
+  if (!expected || source.length !== expected) {
+    return source;
+  }
+  const next = new Uint8Array(source);
+  const minX = clamp(Math.min(start.x, end.x), 0, safeWidth - 1);
+  const maxX = clamp(Math.max(start.x, end.x), 0, safeWidth - 1);
+  const minY = clamp(Math.min(start.y, end.y), 0, safeHeight - 1);
+  const maxY = clamp(Math.max(start.y, end.y), 0, safeHeight - 1);
+  const edgeFeather = normalizeFeather(feather);
+  const featherSpan = Math.max(1, edgeFeather + 1);
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const idx = y * safeWidth + x;
+      let alpha = 1;
+      if (edgeFeather > 0) {
+        const distEdge = Math.min(x - minX, maxX - x, y - minY, maxY - y);
+        alpha = clamp((distEdge + 1) / featherSpan, 0, 1);
+      }
+      next[idx] = blendMaskValue(next[idx], mode, alpha);
+    }
+  }
+  return next;
+}
+
+/**
+ * 应用套索多边形蒙版工具（支持羽化边缘）。/ Apply polygon-lasso mask tool with optional feather.
+ * @param source 源蒙版数据 / Source mask data.
+ * @param width 蒙版宽度 / Mask width.
+ * @param height 蒙版高度 / Mask height.
+ * @param points 多边形点集 / Polygon points.
+ * @param mode 模式（涂抹或擦除）/ Mode (paint or erase).
+ * @param feather 羽化半径（网格像素）/ Feather radius in grid cells.
+ * @returns 新蒙版副本 / New mask buffer.
+ */
+export function applyMaskPolygon(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  points: MaskPoint[],
+  mode: "paint" | "erase",
+  feather = 0,
+): Uint8Array {
+  const safeWidth = normalizeDimension(width);
+  const safeHeight = normalizeDimension(height);
+  const expected = safeWidth * safeHeight;
+  if (!expected || source.length !== expected || points.length < 3) {
+    return source;
+  }
+  const next = new Uint8Array(source);
+  const minX = clamp(Math.min(...points.map((p) => p.x)), 0, safeWidth - 1);
+  const maxX = clamp(Math.max(...points.map((p) => p.x)), 0, safeWidth - 1);
+  const minY = clamp(Math.min(...points.map((p) => p.y)), 0, safeHeight - 1);
+  const maxY = clamp(Math.max(...points.map((p) => p.y)), 0, safeHeight - 1);
+  const edgeFeather = normalizeFeather(feather);
+  const featherSpan = Math.max(1, edgeFeather + 1);
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      if (!isPointInPolygon(x + 0.5, y + 0.5, points)) {
+        continue;
+      }
+      const idx = y * safeWidth + x;
+      let alpha = 1;
+      if (edgeFeather > 0) {
+        let minDist = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < points.length; i += 1) {
+          const a = points[i];
+          const b = points[(i + 1) % points.length];
+          minDist = Math.min(minDist, distancePointToSegment(x + 0.5, y + 0.5, a.x + 0.5, a.y + 0.5, b.x + 0.5, b.y + 0.5));
+        }
+        alpha = clamp(minDist / featherSpan, 0, 1);
+      }
+      next[idx] = blendMaskValue(next[idx], mode, alpha);
+    }
+  }
+  return next;
+}
+
+/**
+ * 应用线性渐变蒙版工具。/ Apply linear-gradient mask tool.
+ * @param source 源蒙版数据 / Source mask data.
+ * @param width 蒙版宽度 / Mask width.
+ * @param height 蒙版高度 / Mask height.
+ * @param from 渐变起点 / Gradient start.
+ * @param to 渐变终点 / Gradient end.
+ * @param mode 模式（涂抹或擦除）/ Mode (paint or erase).
+ * @param feather 羽化强度（指数调节）/ Feather strength as exponent tweak.
+ * @returns 新蒙版副本 / New mask buffer.
+ */
+export function applyMaskGradient(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  from: MaskPoint,
+  to: MaskPoint,
+  mode: "paint" | "erase",
+  feather = 0,
+): Uint8Array {
+  const safeWidth = normalizeDimension(width);
+  const safeHeight = normalizeDimension(height);
+  const expected = safeWidth * safeHeight;
+  if (!expected || source.length !== expected) {
+    return source;
+  }
+  const next = new Uint8Array(source);
+  const vx = to.x - from.x;
+  const vy = to.y - from.y;
+  const lenSq = Math.max(1e-6, vx * vx + vy * vy);
+  const featherPower = 1 + normalizeFeather(feather) * 0.2;
+
+  for (let y = 0; y < safeHeight; y += 1) {
+    for (let x = 0; x < safeWidth; x += 1) {
+      const wx = x - from.x;
+      const wy = y - from.y;
+      const projection = clamp((wx * vx + wy * vy) / lenSq, 0, 1);
+      const alphaRaw = mode === "paint" ? projection : 1 - projection;
+      const alpha = Math.pow(alphaRaw, featherPower);
+      const idx = y * safeWidth + x;
+      next[idx] = blendMaskValue(next[idx], mode, alpha);
+    }
   }
   return next;
 }

@@ -27,7 +27,17 @@ function App() {
     animation,
     dialog,
     mask,
+    maskToolMode,
+    maskFeather,
     presets,
+    paramHistory,
+    galleryItems,
+    sourcePreviewUrl,
+    paletteLocks,
+    effectPipelineOrder,
+    fxPipelinePresets,
+    selectedFxPipelinePresetId,
+    setSelectedFxPipelinePresetId,
     selectedPresetId,
     setSelectedPresetId,
     patchDialog,
@@ -42,18 +52,33 @@ function App() {
     stopAnimationPlayback,
     setMaskEnabled,
     setMaskMode,
+    setMaskTool,
+    setMaskFeatherStrength,
     setBrushSize,
     toggleMaskOverlay,
     toggleMaskFx,
     paintMaskStroke,
+    applyMaskRectangleTool,
+    applyMaskLassoTool,
+    applyMaskGradientTool,
     clearMask,
     invertMask,
+    restoreParamHistory,
+    clearParamHistory,
     savePreset,
     applyPreset,
     renamePreset,
     deletePreset,
     exportPresets,
     importPresets,
+    saveCurrentToGallery,
+    downloadGalleryItem,
+    downloadGalleryItemsBulk,
+    removeGalleryItem,
+    removeGalleryItemsBulk,
+    clearGallery,
+    toggleGalleryFavorite,
+    updateGalleryTags,
     onExportProject,
     onImportProject,
     isDragging,
@@ -70,6 +95,8 @@ function App() {
     onDragOver,
     onDragLeave,
     onDownloadPng,
+    onDownloadGif,
+    onDownloadApng,
     onDownloadVideo,
     onExportJson,
     onImportJson,
@@ -83,13 +110,27 @@ function App() {
     setBatchNamingTemplate,
     performanceMode,
     setPerformanceMode,
+    gifFps,
+    setGifFps,
+    apngFps,
+    setApngFps,
+    exportLoopCount,
+    setExportLoopCount,
     toggleEffect,
+    moveEffectInPipeline,
+    saveFxPipelinePreset,
+    applyFxPipelinePreset,
+    deleteFxPipelinePreset,
     paletteColorsById,
     currentPaletteColors,
     updateCurrentPaletteColor,
     addCurrentPaletteColor,
     removeCurrentPaletteColor,
     resetCurrentPalette,
+    togglePaletteLock,
+    clearPaletteLocks,
+    extractPaletteFromSource,
+    mergeCurrentPaletteSimilar,
     onImportPalette,
     onExportPalette,
     dialogPages,
@@ -106,10 +147,21 @@ function App() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [paletteEditorOpen, setPaletteEditorOpen] = useState(false);
   const [presetName, setPresetName] = useState("My Preset");
+  const [fxPresetName, setFxPresetName] = useState("Default FX");
+  const [gallerySearch, setGallerySearch] = useState("");
+  const [galleryBulkIds, setGalleryBulkIds] = useState<string[]>([]);
+  const [galleryTagDraft, setGalleryTagDraft] = useState("");
+  const [paletteExtractCount, setPaletteExtractCount] = useState(8);
+  const [paletteMergeThreshold, setPaletteMergeThreshold] = useState(24);
+  const [compareEnabled, setCompareEnabled] = useState(false);
+  const [compareZoom, setCompareZoom] = useState(1);
+  const [comparePanX, setComparePanX] = useState(0);
+  const [comparePanY, setComparePanY] = useState(0);
   const [ghostMessageIndex, setGhostMessageIndex] = useState(0);
   const [startPressed, setStartPressed] = useState(false);
   const [startMenuOpen, setStartMenuOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
+  const [selectedGalleryId, setSelectedGalleryId] = useState<string | null>(null);
   const aboutRef = useRef<HTMLDialogElement>(null);
   const docsRef = useRef<HTMLDialogElement>(null);
   const changelogRef = useRef<HTMLDialogElement>(null);
@@ -119,10 +171,98 @@ function App() {
   const presetInputRef = useRef<HTMLInputElement>(null);
   const isMaskDrawingRef = useRef(false);
   const lastMaskPointRef = useRef<{ x: number; y: number } | null>(null);
+  const maskShapeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const maskLassoPointsRef = useRef<Array<{ x: number; y: number }>>([]);
+  const compareDragRef = useRef<{ x: number; y: number } | null>(null);
   const isLocalhost = window.location.hostname === "localhost";
 
   const ghostMessages = useMemo(() => GHOST_MESSAGES[lang], [lang]);
   const paletteKeys = Object.keys(lists.palettes) as PaletteId[];
+  const filteredGalleryItems = useMemo(() => {
+    const keyword = gallerySearch.trim().toLowerCase();
+    if (!keyword) {
+      return galleryItems;
+    }
+    return galleryItems.filter((item) => {
+      const haystack = `${item.name} ${item.tags.join(" ")}`.toLowerCase();
+      return haystack.includes(keyword);
+    });
+  }, [galleryItems, gallerySearch]);
+  const selectedGalleryItem = useMemo(
+    () => filteredGalleryItems.find((item) => item.id === selectedGalleryId) ?? filteredGalleryItems[0] ?? null,
+    [filteredGalleryItems, selectedGalleryId],
+  );
+  const selectedGalleryIndex = useMemo(() => {
+    if (!selectedGalleryItem) {
+      return -1;
+    }
+    return filteredGalleryItems.findIndex((item) => item.id === selectedGalleryItem.id);
+  }, [filteredGalleryItems, selectedGalleryItem]);
+  const allFilteredSelected = useMemo(() => (
+    filteredGalleryItems.length > 0
+    && filteredGalleryItems.every((item) => galleryBulkIds.includes(item.id))
+  ), [filteredGalleryItems, galleryBulkIds]);
+
+  const goGalleryStep = useCallback((step: number) => {
+    if (filteredGalleryItems.length === 0) {
+      return;
+    }
+    const anchorId = selectedGalleryId ?? filteredGalleryItems[0].id;
+    const currentIndex = filteredGalleryItems.findIndex((item) => item.id === anchorId);
+    const baseIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = (baseIndex + step + filteredGalleryItems.length) % filteredGalleryItems.length;
+    setSelectedGalleryId(filteredGalleryItems[nextIndex].id);
+  }, [filteredGalleryItems, selectedGalleryId]);
+
+  useEffect(() => {
+    if (filteredGalleryItems.length === 0) {
+      if (selectedGalleryId !== null) {
+        setSelectedGalleryId(null);
+      }
+      return;
+    }
+    if (!selectedGalleryId || !filteredGalleryItems.some((item) => item.id === selectedGalleryId)) {
+      setSelectedGalleryId(filteredGalleryItems[0].id);
+    }
+  }, [filteredGalleryItems, selectedGalleryId]);
+
+  useEffect(() => {
+    setGalleryBulkIds((previous) => previous.filter((id) => galleryItems.some((item) => item.id === id)));
+  }, [galleryItems]);
+
+  useEffect(() => {
+    if (filteredGalleryItems.length <= 1) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tagName = target.tagName;
+        if (
+          target.isContentEditable
+          || tagName === "INPUT"
+          || tagName === "TEXTAREA"
+          || tagName === "SELECT"
+        ) {
+          return;
+        }
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        goGalleryStep(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        goGalleryStep(1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [filteredGalleryItems.length, goGalleryStep]);
 
   useEffect(() => {
     const syncDialog = (node: HTMLDialogElement | null, open: boolean) => {
@@ -225,9 +365,14 @@ function App() {
     event.stopPropagation();
     isMaskDrawingRef.current = true;
     lastMaskPointRef.current = point;
-    paintMaskStroke(point, point);
+    maskShapeStartRef.current = point;
+    if (maskToolMode === "brush") {
+      paintMaskStroke(point, point);
+    } else if (maskToolMode === "lasso") {
+      maskLassoPointsRef.current = [point];
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
-  }, [grid, locateMaskPoint, mask.enabled, paintMaskStroke]);
+  }, [grid, locateMaskPoint, mask.enabled, maskToolMode, paintMaskStroke]);
 
   /**
    * 持续蒙版绘制。/ Continue mask drawing while dragging.
@@ -244,9 +389,16 @@ function App() {
       return;
     }
     const from = lastMaskPointRef.current ?? point;
-    paintMaskStroke(from, point);
+    if (maskToolMode === "brush") {
+      paintMaskStroke(from, point);
+    } else if (maskToolMode === "lasso") {
+      const last = maskLassoPointsRef.current[maskLassoPointsRef.current.length - 1];
+      if (!last || Math.abs(last.x - point.x) + Math.abs(last.y - point.y) >= 1) {
+        maskLassoPointsRef.current = [...maskLassoPointsRef.current, point];
+      }
+    }
     lastMaskPointRef.current = point;
-  }, [locateMaskPoint, mask.enabled, paintMaskStroke]);
+  }, [locateMaskPoint, mask.enabled, maskToolMode, paintMaskStroke]);
 
   /**
    * 结束蒙版绘制。/ Finish current mask drawing stroke.
@@ -258,17 +410,35 @@ function App() {
       return;
     }
     event.stopPropagation();
+    const endPoint = locateMaskPoint(event) ?? lastMaskPointRef.current;
+    const startPoint = maskShapeStartRef.current;
+    if (startPoint && endPoint) {
+      if (maskToolMode === "rect") {
+        applyMaskRectangleTool(startPoint, endPoint);
+      } else if (maskToolMode === "gradient") {
+        applyMaskGradientTool(startPoint, endPoint);
+      } else if (maskToolMode === "lasso") {
+        const points = maskLassoPointsRef.current.length > 0
+          ? [...maskLassoPointsRef.current, endPoint]
+          : [startPoint, endPoint];
+        applyMaskLassoTool(points);
+      }
+    }
     isMaskDrawingRef.current = false;
     lastMaskPointRef.current = null;
+    maskShapeStartRef.current = null;
+    maskLassoPointsRef.current = [];
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-  }, []);
+  }, [applyMaskGradientTool, applyMaskLassoTool, applyMaskRectangleTool, locateMaskPoint, maskToolMode]);
 
   useEffect(() => {
     if (!mask.enabled) {
       isMaskDrawingRef.current = false;
       lastMaskPointRef.current = null;
+      maskShapeStartRef.current = null;
+      maskLassoPointsRef.current = [];
     }
   }, [mask.enabled]);
 
@@ -281,6 +451,24 @@ function App() {
       setPresetName(target.name);
     }
   }, [presets, selectedPresetId]);
+
+  useEffect(() => {
+    if (!selectedFxPipelinePresetId) {
+      return;
+    }
+    const target = fxPipelinePresets.find((preset) => preset.id === selectedFxPipelinePresetId);
+    if (target) {
+      setFxPresetName(target.name);
+    }
+  }, [fxPipelinePresets, selectedFxPipelinePresetId]);
+
+  useEffect(() => {
+    if (!selectedGalleryItem) {
+      setGalleryTagDraft("");
+      return;
+    }
+    setGalleryTagDraft(selectedGalleryItem.tags.join(", "));
+  }, [selectedGalleryItem]);
 
   /**
    * 处理预览区拖拽：优先识别 `.pxc`，否则按图片流程处理。/ Handle preview drop: prioritize `.pxc`, otherwise image flow.
@@ -362,6 +550,62 @@ function App() {
       { id: "close-menu", label: t("startCloseMenu"), onClick: closeStartMenu },
     ];
   }, [closeStartMenu, grid, onExportProject, onOpenFlipbook, onPickFile, soundOn, t]);
+
+  const toggleGalleryBulkId = useCallback((imageId: string) => {
+    setGalleryBulkIds((previous) => (
+      previous.includes(imageId)
+        ? previous.filter((id) => id !== imageId)
+        : [...previous, imageId]
+    ));
+  }, []);
+
+  const toggleSelectAllFiltered = useCallback(() => {
+    if (allFilteredSelected) {
+      setGalleryBulkIds((previous) => previous.filter((id) => !filteredGalleryItems.some((item) => item.id === id)));
+      return;
+    }
+    const filteredIds = filteredGalleryItems.map((item) => item.id);
+    setGalleryBulkIds((previous) => Array.from(new Set([...previous, ...filteredIds])));
+  }, [allFilteredSelected, filteredGalleryItems]);
+
+  const applyGalleryTagDraft = useCallback(() => {
+    if (!selectedGalleryItem) {
+      return;
+    }
+    updateGalleryTags(selectedGalleryItem.id, galleryTagDraft);
+  }, [galleryTagDraft, selectedGalleryItem, updateGalleryTags]);
+
+  const resetCompareTransform = useCallback(() => {
+    setCompareZoom(1);
+    setComparePanX(0);
+    setComparePanY(0);
+  }, []);
+
+  const onCompareWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? 0.1 : -0.1;
+    setCompareZoom((previous) => Math.min(4, Math.max(0.5, Number((previous + delta).toFixed(2)))));
+  }, []);
+
+  const onComparePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    compareDragRef.current = { x: event.clientX - comparePanX, y: event.clientY - comparePanY };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [comparePanX, comparePanY]);
+
+  const onComparePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!compareDragRef.current) {
+      return;
+    }
+    setComparePanX(event.clientX - compareDragRef.current.x);
+    setComparePanY(event.clientY - compareDragRef.current.y);
+  }, []);
+
+  const onComparePointerEnd = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    compareDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
 
   return (
     <div className="desktop">
@@ -706,6 +950,48 @@ function App() {
                     }}
                   />
                 </div>
+                <div className="palette-smart-controls">
+                  <label className="dialog-advanced__label">
+                    <span>{t("paletteExtractCount")} {paletteExtractCount}</span>
+                    <input
+                      type="range"
+                      min={1}
+                      max={Math.max(1, currentPaletteColors.length)}
+                      value={Math.min(paletteExtractCount, Math.max(1, currentPaletteColors.length))}
+                      onChange={(event) => setPaletteExtractCount(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="dialog-advanced__label">
+                    <span>{t("paletteMergeThreshold")} {paletteMergeThreshold}</span>
+                    <input
+                      type="range"
+                      min={2}
+                      max={96}
+                      value={paletteMergeThreshold}
+                      onChange={(event) => setPaletteMergeThreshold(Number(event.target.value))}
+                    />
+                  </label>
+                  <div className="tiny-grid">
+                    <button
+                      type="button"
+                      className="retro-btn btn-mini"
+                      onClick={() => extractPaletteFromSource(paletteExtractCount)}
+                      disabled={!sourcePreviewUrl}
+                    >
+                      {t("paletteExtract")}
+                    </button>
+                    <button
+                      type="button"
+                      className="retro-btn btn-mini"
+                      onClick={() => mergeCurrentPaletteSimilar(paletteMergeThreshold)}
+                    >
+                      {t("paletteMerge")}
+                    </button>
+                    <button type="button" className="retro-btn btn-mini" onClick={clearPaletteLocks}>
+                      {t("paletteUnlockAll")}
+                    </button>
+                  </div>
+                </div>
                 {paletteEditorOpen ? (
                   <div className="palette-editor">
                     <div className="palette-editor__title">
@@ -741,6 +1027,13 @@ function App() {
                               }}
                             />
                           ))}
+                          <button
+                            type="button"
+                            className="retro-btn btn-mini"
+                            onClick={() => togglePaletteLock(index)}
+                          >
+                            {paletteLocks[index] ? t("paletteUnlock") : t("paletteLock")}
+                          </button>
                           <button
                             type="button"
                             className="retro-btn btn-mini"
@@ -891,6 +1184,37 @@ function App() {
                   <span>{t("maskEnable")}</span>
                 </label>
                 <div className="mask-controls">
+                  <div className="group-label">{t("maskToolMode")}</div>
+                  <div className="tiny-grid mask-tool-grid">
+                    <button
+                      type="button"
+                      className={`retro-btn btn-mini ${maskToolMode === "brush" ? "is-active" : ""}`}
+                      onClick={() => setMaskTool("brush")}
+                    >
+                      {t("maskToolBrush")}
+                    </button>
+                    <button
+                      type="button"
+                      className={`retro-btn btn-mini ${maskToolMode === "rect" ? "is-active" : ""}`}
+                      onClick={() => setMaskTool("rect")}
+                    >
+                      {t("maskToolRect")}
+                    </button>
+                    <button
+                      type="button"
+                      className={`retro-btn btn-mini ${maskToolMode === "lasso" ? "is-active" : ""}`}
+                      onClick={() => setMaskTool("lasso")}
+                    >
+                      {t("maskToolLasso")}
+                    </button>
+                    <button
+                      type="button"
+                      className={`retro-btn btn-mini ${maskToolMode === "gradient" ? "is-active" : ""}`}
+                      onClick={() => setMaskTool("gradient")}
+                    >
+                      {t("maskToolGradient")}
+                    </button>
+                  </div>
                   <div className="tiny-grid">
                     <button
                       type="button"
@@ -907,6 +1231,16 @@ function App() {
                       {t("maskErase")}
                     </button>
                   </div>
+                  <label className="dialog-advanced__label">
+                    <span>{t("maskFeather")} {maskFeather}</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={16}
+                      value={maskFeather}
+                      onChange={(event) => setMaskFeatherStrength(Number(event.target.value))}
+                    />
+                  </label>
                   <label className="dialog-advanced__label">
                     <span>{t("maskBrush")} {mask.brushSize}</span>
                     <input
@@ -944,6 +1278,121 @@ function App() {
                       </label>
                     ))}
                   </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="tool-window">
+              <header>
+                <span>{t("fxPipelineTitle")}</span>
+                <WindowControls />
+              </header>
+              <div className="tool-content">
+                <div className="fx-pipeline-list">
+                  {effectPipelineOrder.map((effectKey, index) => (
+                    <div key={`pipeline-${effectKey}`} className="fx-pipeline-item">
+                      <span>{index + 1}. {t(`effect_${effectKey}`)}</span>
+                      <div className="fx-pipeline-item__actions">
+                        <button
+                          type="button"
+                          className="retro-btn btn-mini"
+                          onClick={() => moveEffectInPipeline(effectKey, -1)}
+                          disabled={index === 0}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="retro-btn btn-mini"
+                          onClick={() => moveEffectInPipeline(effectKey, 1)}
+                          disabled={index === effectPipelineOrder.length - 1}
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="preset-controls">
+                  <input
+                    type="text"
+                    value={fxPresetName}
+                    onChange={(event) => setFxPresetName(event.target.value)}
+                    placeholder={t("fxPipelinePresetName")}
+                  />
+                  <div className="preset-actions">
+                    <button type="button" className="retro-btn btn-mini" onClick={() => saveFxPipelinePreset(fxPresetName)}>
+                      {t("fxPipelinePresetSave")}
+                    </button>
+                    <button
+                      type="button"
+                      className="retro-btn btn-mini"
+                      disabled={!selectedFxPipelinePresetId}
+                      onClick={() => {
+                        if (selectedFxPipelinePresetId) {
+                          applyFxPipelinePreset(selectedFxPipelinePresetId);
+                        }
+                      }}
+                    >
+                      {t("fxPipelinePresetApply")}
+                    </button>
+                    <button
+                      type="button"
+                      className="retro-btn btn-mini"
+                      disabled={!selectedFxPipelinePresetId}
+                      onClick={() => {
+                        if (selectedFxPipelinePresetId) {
+                          deleteFxPipelinePreset(selectedFxPipelinePresetId);
+                        }
+                      }}
+                    >
+                      {t("fxPipelinePresetDelete")}
+                    </button>
+                  </div>
+                </div>
+                <div className="preset-list">
+                  {fxPipelinePresets.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`preset-item ${selectedFxPipelinePresetId === item.id ? "is-active" : ""}`}
+                      onClick={() => setSelectedFxPipelinePresetId(item.id)}
+                    >
+                      <span>{item.name}</span>
+                      <small>{item.order.map((effectKey) => t(`effect_${effectKey}`)).join(" > ")}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+
+            <section className="tool-window">
+              <header>
+                <span>{t("historyTitle")}</span>
+                <WindowControls />
+              </header>
+              <div className="tool-content">
+                <div className="history-actions">
+                  <button type="button" className="retro-btn btn-mini" onClick={clearParamHistory} disabled={paramHistory.length === 0}>
+                    {t("historyClear")}
+                  </button>
+                </div>
+                <div className="history-list">
+                  {paramHistory.length > 0 ? (
+                    paramHistory.map((entry) => (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        className="history-item"
+                        onClick={() => restoreParamHistory(entry.id)}
+                      >
+                        <span>{entry.label}</span>
+                        <small>{new Date(entry.createdAt).toLocaleString()}</small>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="preset-empty">{t("historyEmpty")}</div>
+                  )}
                 </div>
               </div>
             </section>
@@ -1167,6 +1616,26 @@ function App() {
                   >
                     {isBatchProcessing ? t("batchProcessing") : t("batchZip")}
                   </button>
+                  <button
+                    type="button"
+                    className="retro-btn btn-mini"
+                    onClick={() => {
+                      void onDownloadGif();
+                    }}
+                    disabled={!grid || isRecording || isBatchProcessing}
+                  >
+                    {t("downloadGif")}
+                  </button>
+                  <button
+                    type="button"
+                    className="retro-btn btn-mini"
+                    onClick={() => {
+                      void onDownloadApng();
+                    }}
+                    disabled={!grid || isRecording || isBatchProcessing}
+                  >
+                    {t("downloadApng")}
+                  </button>
                   {canRecordVideo ? (
                     <button
                       type="button"
@@ -1181,6 +1650,38 @@ function App() {
                   ) : null}
                 </div>
                 <div className="batch-panel">
+                  <div className="export-settings-grid">
+                    <label>
+                      <span>{t("exportGifFps")} {gifFps}</span>
+                      <input
+                        type="range"
+                        min={1}
+                        max={24}
+                        value={gifFps}
+                        onChange={(event) => setGifFps(Number(event.target.value))}
+                      />
+                    </label>
+                    <label>
+                      <span>{t("exportApngFps")} {apngFps}</span>
+                      <input
+                        type="range"
+                        min={1}
+                        max={24}
+                        value={apngFps}
+                        onChange={(event) => setApngFps(Number(event.target.value))}
+                      />
+                    </label>
+                    <label>
+                      <span>{t("exportLoopCount")} {exportLoopCount}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={99}
+                        value={exportLoopCount}
+                        onChange={(event) => setExportLoopCount(Number(event.target.value) || 0)}
+                      />
+                    </label>
+                  </div>
                   <label className="batch-template">
                     <span>{t("batchTemplate")}</span>
                     <input
@@ -1200,6 +1701,231 @@ function App() {
                   {batchProgress.currentFile ? (
                     <small className="batch-current">{batchProgress.currentFile}</small>
                   ) : null}
+                </div>
+              </div>
+            </section>
+
+            <section className="tool-window gallery-window">
+              <header>
+                <span>{t("galleryTitle")}</span>
+                <WindowControls />
+              </header>
+              <div className="tool-content gallery-content">
+                <div className="gallery-actions">
+                  <button
+                    type="button"
+                    className="retro-btn btn-mini"
+                    onClick={() => {
+                      void saveCurrentToGallery();
+                    }}
+                    disabled={!grid || isRecording || isBatchProcessing}
+                  >
+                    {t("gallerySaveCurrent")}
+                  </button>
+                  <button
+                    type="button"
+                    className="retro-btn btn-mini"
+                    onClick={() => {
+                      void clearGallery();
+                    }}
+                    disabled={galleryItems.length === 0}
+                  >
+                    {t("galleryClear")}
+                  </button>
+                </div>
+                <div className="gallery-toolbar">
+                  <input
+                    type="text"
+                    value={gallerySearch}
+                    onChange={(event) => setGallerySearch(event.target.value)}
+                    placeholder={t("gallerySearchPlaceholder")}
+                  />
+                  <button type="button" className="retro-btn btn-mini" onClick={toggleSelectAllFiltered}>
+                    {allFilteredSelected ? t("galleryUnselectAll") : t("gallerySelectAll")}
+                  </button>
+                  <button
+                    type="button"
+                    className="retro-btn btn-mini"
+                    disabled={galleryBulkIds.length === 0}
+                    onClick={() => downloadGalleryItemsBulk(galleryBulkIds)}
+                  >
+                    {t("galleryBulkDownload")}
+                  </button>
+                  <button
+                    type="button"
+                    className="retro-btn btn-mini"
+                    disabled={galleryBulkIds.length === 0}
+                    onClick={() => {
+                      void removeGalleryItemsBulk(galleryBulkIds);
+                      setGalleryBulkIds([]);
+                    }}
+                  >
+                    {t("galleryBulkDelete")}
+                  </button>
+                </div>
+
+                <div className="gallery-region">
+                  {filteredGalleryItems.length > 0 ? (
+                    <div className="gallery-layout">
+                      <div className="gallery-list" role="listbox" aria-label={t("galleryTitle")}>
+                        {filteredGalleryItems.map((item) => (
+                          <div
+                            key={item.id}
+                            className={`gallery-list-item ${selectedGalleryItem?.id === item.id ? "is-active" : ""}`}
+                          >
+                            <label className="gallery-bulk-check">
+                              <input
+                                type="checkbox"
+                                checked={galleryBulkIds.includes(item.id)}
+                                onChange={() => toggleGalleryBulkId(item.id)}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              className="gallery-list-main"
+                              onClick={() => setSelectedGalleryId(item.id)}
+                              title={item.name}
+                            >
+                              <img className="gallery-list-thumb" src={item.url} alt={item.name} loading="lazy" />
+                              <span className="gallery-list-name">{item.name}</span>
+                              <small className="gallery-list-time">{new Date(item.createdAt).toLocaleString()}</small>
+                              {item.tags.length > 0 ? (
+                                <small className="gallery-list-tags">{item.tags.join(", ")}</small>
+                              ) : null}
+                            </button>
+                            <button
+                              type="button"
+                              className={`gallery-fav-btn ${item.favorite ? "is-active" : ""}`}
+                              onClick={() => toggleGalleryFavorite(item.id)}
+                              title={t("galleryFavorite")}
+                            >
+                              ★
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      {selectedGalleryItem ? (
+                        <article className="gallery-preview">
+                          <div className="gallery-preview-image-wrap">
+                            <img
+                              className="gallery-preview-image"
+                              src={selectedGalleryItem.url}
+                              alt={selectedGalleryItem.name}
+                              loading="lazy"
+                            />
+                          </div>
+                          <div className="gallery-nav-actions">
+                            <button
+                              type="button"
+                              className="retro-btn btn-mini"
+                              onClick={() => goGalleryStep(-1)}
+                              disabled={filteredGalleryItems.length <= 1}
+                            >
+                              {t("galleryPrev")}
+                            </button>
+                            <span className="gallery-nav-status">{`${selectedGalleryIndex + 1} / ${filteredGalleryItems.length}`}</span>
+                            <button
+                              type="button"
+                              className="retro-btn btn-mini"
+                              onClick={() => goGalleryStep(1)}
+                              disabled={filteredGalleryItems.length <= 1}
+                            >
+                              {t("galleryNext")}
+                            </button>
+                          </div>
+                          <div className="gallery-tag-editor">
+                            <input
+                              type="text"
+                              value={galleryTagDraft}
+                              onChange={(event) => setGalleryTagDraft(event.target.value)}
+                              placeholder={t("galleryTagsPlaceholder")}
+                            />
+                            <button type="button" className="retro-btn btn-mini" onClick={applyGalleryTagDraft}>
+                              {t("galleryTagsApply")}
+                            </button>
+                            <button
+                              type="button"
+                              className={`retro-btn btn-mini ${compareEnabled ? "is-active" : ""}`}
+                              onClick={() => setCompareEnabled((value) => !value)}
+                              disabled={!sourcePreviewUrl}
+                            >
+                              {t("compareToggle")}
+                            </button>
+                          </div>
+                          {compareEnabled && sourcePreviewUrl ? (
+                            <div className="compare-box">
+                              <div className="compare-toolbar">
+                                <button type="button" className="retro-btn btn-mini" onClick={() => setCompareZoom((v) => Math.max(0.5, Number((v - 0.1).toFixed(2))))}>-</button>
+                                <span>{Math.round(compareZoom * 100)}%</span>
+                                <button type="button" className="retro-btn btn-mini" onClick={() => setCompareZoom((v) => Math.min(4, Number((v + 0.1).toFixed(2))))}>+</button>
+                                <button type="button" className="retro-btn btn-mini" onClick={resetCompareTransform}>
+                                  {t("compareReset")}
+                                </button>
+                                <button type="button" className="retro-btn btn-mini" onClick={() => setComparePanX((v) => v - 20)}>←</button>
+                                <button type="button" className="retro-btn btn-mini" onClick={() => setComparePanY((v) => v - 20)}>↑</button>
+                                <button type="button" className="retro-btn btn-mini" onClick={() => setComparePanY((v) => v + 20)}>↓</button>
+                                <button type="button" className="retro-btn btn-mini" onClick={() => setComparePanX((v) => v + 20)}>→</button>
+                              </div>
+                              <div
+                                className="compare-viewport"
+                                onWheel={onCompareWheel}
+                                onPointerDown={onComparePointerDown}
+                                onPointerMove={onComparePointerMove}
+                                onPointerUp={onComparePointerEnd}
+                                onPointerCancel={onComparePointerEnd}
+                              >
+                                <div className="compare-pane">
+                                  <span>{t("compareSource")}</span>
+                                  <img
+                                    src={sourcePreviewUrl}
+                                    alt={t("compareSource")}
+                                    style={{ transform: `translate(${comparePanX}px, ${comparePanY}px) scale(${compareZoom})` }}
+                                  />
+                                </div>
+                                <div className="compare-pane">
+                                  <span>{t("compareProcessed")}</span>
+                                  <img
+                                    src={selectedGalleryItem.url}
+                                    alt={t("compareProcessed")}
+                                    style={{ transform: `translate(${comparePanX}px, ${comparePanY}px) scale(${compareZoom})` }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          ) : null}
+                          <small className="gallery-nav-hint">{t("galleryShortcutHint")}</small>
+                          <div className="gallery-meta">
+                            <span>{selectedGalleryItem.name}</span>
+                            <small>{`${selectedGalleryItem.width} x ${selectedGalleryItem.height}`}</small>
+                            <small>{new Date(selectedGalleryItem.createdAt).toLocaleString()}</small>
+                          </div>
+                          <div className="gallery-item-actions">
+                            <button
+                              type="button"
+                              className="retro-btn btn-mini"
+                              onClick={() => downloadGalleryItem(selectedGalleryItem.id)}
+                            >
+                              {t("download")}
+                            </button>
+                            <button
+                              type="button"
+                              className="retro-btn btn-mini"
+                              onClick={() => {
+                                void removeGalleryItem(selectedGalleryItem.id);
+                              }}
+                            >
+                              {t("galleryDelete")}
+                            </button>
+                          </div>
+                        </article>
+                      ) : (
+                        <div className="gallery-preview gallery-preview-empty">{t("galleryEmpty")}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="preset-empty">{t("galleryEmpty")}</div>
+                  )}
                 </div>
               </div>
             </section>

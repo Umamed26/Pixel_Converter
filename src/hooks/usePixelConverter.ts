@@ -1,6 +1,8 @@
 // 核心 Hook：管理状态、渲染循环与导入导出流程。/ Core hook: manages state, render loop, and IO workflows.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GIFEncoder, applyPalette, quantize } from "gifenc";
 import JSZip from "jszip";
+import UPNG from "upng-js";
 import {
   DIALOG_STYLES,
   EFFECTS,
@@ -10,7 +12,23 @@ import {
   STRINGS,
   type PaletteId,
 } from "../config/constants";
-import { applyMaskStroke, createMaskData, invertMaskData, type MaskPoint } from "../lib/maskEngine";
+import {
+  clearGalleryImages,
+  deleteGalleryImage,
+  listGalleryImages,
+  saveGalleryImage,
+  type GalleryImageRecord,
+} from "../lib/galleryStore";
+import {
+  applyMaskGradient,
+  applyMaskPolygon,
+  applyMaskRectangle,
+  applyMaskStroke,
+  createMaskData,
+  invertMaskData,
+  type MaskPoint,
+} from "../lib/maskEngine";
+import { applyPaletteWithLocks, extractDominantColors, mergeSimilarColors } from "../lib/paletteTools";
 import { fileToImage, imageToPixelGrid, scaleCanvasForExport } from "../lib/pixelEngine";
 import {
   PRESET_LIMIT,
@@ -26,7 +44,7 @@ import {
   decodeMaskSnapshot,
   parseProjectFileText,
 } from "../lib/projectStore";
-import { renderFrame } from "../lib/renderFrame";
+import { DEFAULT_EFFECT_PLUGINS, renderFrame, type EffectPlugin } from "../lib/renderFrame";
 import type {
   AnimationState,
   BatchProgress,
@@ -56,6 +74,51 @@ interface GridJsonPayload {
   grid: string;
 }
 
+interface GalleryImageView {
+  id: string;
+  name: string;
+  createdAt: string;
+  width: number;
+  height: number;
+  url: string;
+  favorite: boolean;
+  tags: string[];
+}
+
+interface GalleryMeta {
+  favorite: boolean;
+  tags: string[];
+}
+
+type GalleryMetaMap = Record<string, GalleryMeta>;
+
+interface ParamHistorySnapshot {
+  pixelSize: number;
+  palette: PaletteId;
+  paletteOverrides: Partial<Record<PaletteId, PaletteColor[]>>;
+  effects: EffectsState;
+  effectTuning: EffectTuning;
+  dialog: DialogState;
+  maskConfig: MaskConfig;
+  animation: AnimationState;
+  effectPipelineOrder: Array<keyof EffectsState>;
+}
+
+interface ParamHistoryEntry {
+  id: string;
+  createdAt: string;
+  label: string;
+  snapshot: ParamHistorySnapshot;
+}
+
+interface FxPipelinePreset {
+  id: string;
+  name: string;
+  order: Array<keyof EffectsState>;
+}
+
+type MaskToolMode = "brush" | "rect" | "lasso" | "gradient";
+
 interface PixelWorkerRequest {
   id: number;
   type: "pixelize";
@@ -83,6 +146,14 @@ interface PixelWorkerFailure {
 
 const PIXEL_WORKER_TIMEOUT_MS = 15_000;
 const BATCH_RETRY_LIMIT = 3;
+const BATCH_WORKER_CONCURRENCY = 2;
+const HISTORY_LIMIT = 64;
+const FX_PIPELINE_PRESET_LIMIT = 12;
+const FX_PIPELINE_PRESET_KEY = "pixel_workshop_fx_pipeline_v1";
+const GALLERY_META_KEY = "pixel_workshop_gallery_meta_v1";
+const GIF_DEFAULT_FPS = 10;
+const APNG_DEFAULT_FPS = 12;
+const EXPORT_FRAME_CAP = 48;
 
 /**
  * 将网格索引序列压缩为 base36 字符串。/ Encode grid indices as compact base36 string.
@@ -481,6 +552,167 @@ function normalizePaletteId(raw: unknown): PaletteId | null {
 }
 
 /**
+ * 返回默认 FX 管线顺序。/ Return default FX pipeline order.
+ * @returns FX 顺序数组 / Ordered FX keys.
+ */
+function defaultEffectPipelineOrder(): Array<keyof EffectsState> {
+  return DEFAULT_EFFECT_PLUGINS.map((plugin) => plugin.key);
+}
+
+/**
+ * 规范化 FX 管线顺序并补齐缺失项。/ Normalize FX pipeline order and append missing effects.
+ * @param raw 原始顺序 / Raw order.
+ * @returns 合法完整顺序 / Valid complete order.
+ */
+function normalizeEffectPipelineOrder(raw: Array<keyof EffectsState>): Array<keyof EffectsState> {
+  const order: Array<keyof EffectsState> = [];
+  const seen = new Set<keyof EffectsState>();
+  for (const key of raw) {
+    if (!EFFECTS.includes(key) || seen.has(key)) {
+      continue;
+    }
+    order.push(key);
+    seen.add(key);
+  }
+  for (const key of defaultEffectPipelineOrder()) {
+    if (!seen.has(key)) {
+      order.push(key);
+    }
+  }
+  return order;
+}
+
+/**
+ * 深拷贝动画状态。/ Deep clone animation state.
+ * @param animation 动画状态 / Animation state.
+ * @returns 拷贝后的动画状态 / Cloned animation state.
+ */
+function cloneAnimationState(animation: AnimationState): AnimationState {
+  return {
+    ...animation,
+    startTuning: cloneEffectTuning(animation.startTuning),
+    endTuning: cloneEffectTuning(animation.endTuning),
+  };
+}
+
+/**
+ * 读取本地 FX 管线预设。/ Load local FX pipeline presets.
+ * @returns 预设数组 / Preset list.
+ */
+function loadFxPipelinePresets(): FxPipelinePreset[] {
+  try {
+    const raw = window.localStorage.getItem(FX_PIPELINE_PRESET_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const presets: FxPipelinePreset[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const record = item as Partial<FxPipelinePreset>;
+      if (typeof record.id !== "string" || typeof record.name !== "string" || !Array.isArray(record.order)) {
+        continue;
+      }
+      const normalized = normalizeEffectPipelineOrder(record.order as Array<keyof EffectsState>);
+      presets.push({
+        id: record.id,
+        name: record.name,
+        order: normalized,
+      });
+    }
+    return presets.slice(0, FX_PIPELINE_PRESET_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 保存 FX 管线预设到本地。/ Persist FX pipeline presets to local storage.
+ * @param presets 预设数组 / Preset list.
+ * @returns 无返回值 / No return value.
+ */
+function saveFxPipelinePresets(presets: FxPipelinePreset[]): void {
+  try {
+    window.localStorage.setItem(FX_PIPELINE_PRESET_KEY, JSON.stringify(presets.slice(0, FX_PIPELINE_PRESET_LIMIT)));
+  } catch {
+    // 本地存储失败时忽略。/ Ignore storage failures.
+  }
+}
+
+/**
+ * 规范化图廊标签数组。/ Normalize gallery tags.
+ * @param raw 原始标签 / Raw tags.
+ * @returns 清洗后的标签数组 / Sanitized tags.
+ */
+function normalizeGalleryTags(raw: string[]): string[] {
+  const dedup = new Set<string>();
+  for (const value of raw) {
+    const token = value.trim();
+    if (!token) {
+      continue;
+    }
+    dedup.add(token);
+    if (dedup.size >= 16) {
+      break;
+    }
+  }
+  return Array.from(dedup);
+}
+
+/**
+ * 从本地读取图廊元数据。/ Load gallery metadata from local storage.
+ * @returns 图廊元数据映射 / Gallery metadata map.
+ */
+function loadGalleryMetaMap(): GalleryMetaMap {
+  try {
+    const raw = window.localStorage.getItem(GALLERY_META_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+    const next: GalleryMetaMap = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object") {
+        continue;
+      }
+      const record = value as { favorite?: unknown; tags?: unknown };
+      const favorite = Boolean(record.favorite);
+      const tagsRaw = Array.isArray(record.tags)
+        ? record.tags.filter((item): item is string => typeof item === "string")
+        : [];
+      next[key] = {
+        favorite,
+        tags: normalizeGalleryTags(tagsRaw),
+      };
+    }
+    return next;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 保存图廊元数据到本地。/ Persist gallery metadata to local storage.
+ * @param value 图廊元数据映射 / Gallery metadata map.
+ * @returns 无返回值 / No return value.
+ */
+function saveGalleryMetaMap(value: GalleryMetaMap): void {
+  try {
+    window.localStorage.setItem(GALLERY_META_KEY, JSON.stringify(value));
+  } catch {
+    // 本地存储失败时忽略。/ Ignore storage failures.
+  }
+}
+
+/**
  * 像素工作流核心 Hook。/ Core hook for the pixel workflow.
  * @param ghostSrc 像素机器人图片地址 / Pixel mascot image source.
  * @returns UI 层所需的状态与动作集合 / State and actions consumed by UI components.
@@ -509,8 +741,21 @@ export function usePixelConverter(ghostSrc: string) {
   const [batchProgress, setBatchProgress] = useState<BatchProgress>(createEmptyBatchProgress);
   const [batchNamingTemplate, setBatchNamingTemplate] = useState(defaultBatchNamingTemplate);
   const [performanceMode, setPerformanceMode] = useState(false);
+  const [gifFps, setGifFps] = useState(GIF_DEFAULT_FPS);
+  const [apngFps, setApngFps] = useState(APNG_DEFAULT_FPS);
+  const [exportLoopCount, setExportLoopCount] = useState(0);
+  const [galleryItems, setGalleryItems] = useState<GalleryImageView[]>([]);
+  const [sourcePreviewUrl, setSourcePreviewUrl] = useState<string | null>(null);
+  const [maskToolMode, setMaskToolMode] = useState<MaskToolMode>("brush");
+  const [maskFeather, setMaskFeather] = useState(0);
+  const [paletteLocks, setPaletteLocks] = useState<boolean[]>([]);
+  const [effectPipelineOrder, setEffectPipelineOrder] = useState<Array<keyof EffectsState>>(defaultEffectPipelineOrder);
+  const [fxPipelinePresets, setFxPipelinePresets] = useState<FxPipelinePreset[]>(loadFxPipelinePresets);
+  const [selectedFxPipelinePresetId, setSelectedFxPipelinePresetId] = useState<string | null>(null);
+  const [paramHistory, setParamHistory] = useState<ParamHistoryEntry[]>([]);
 
   const sourceImageRef = useRef<HTMLImageElement | null>(null);
+  const sourcePreviewUrlRef = useRef<string | null>(null);
   const revealCountRef = useRef(0);
   const pageRevealFinishedAtRef = useRef<number | null>(null);
   const dirtyRef = useRef(true);
@@ -527,6 +772,14 @@ export function usePixelConverter(ghostSrc: string) {
   const ghostRef = useRef<HTMLImageElement>(new Image());
   const workerSeqRef = useRef(0);
   const lastRenderCommitRef = useRef(0);
+  const galleryBlobMapRef = useRef<Map<string, Blob>>(new Map());
+  const galleryUrlListRef = useRef<string[]>([]);
+  const exportFrameCacheRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
+  const gridCacheIdRef = useRef<WeakMap<PixelGrid, string>>(new WeakMap());
+  const galleryMetaMapRef = useRef<GalleryMetaMap>(loadGalleryMetaMap());
+  const historySuspendRef = useRef(false);
+  const historyHashRef = useRef("");
+  const historyCounterRef = useRef(0);
 
   const paletteColorsById = useMemo(() => {
     const ids = Object.keys(PALETTES) as PaletteId[];
@@ -535,6 +788,24 @@ export function usePixelConverter(ghostSrc: string) {
   }, [paletteOverrides]);
 
   const selectedPaletteColors = paletteColorsById[palette];
+  const effectPluginMap = useMemo(() => {
+    const map = new Map<keyof EffectsState, EffectPlugin>();
+    for (const plugin of DEFAULT_EFFECT_PLUGINS) {
+      map.set(plugin.key, plugin);
+    }
+    return map;
+  }, []);
+  const effectPlugins = useMemo(() => {
+    const order = normalizeEffectPipelineOrder(effectPipelineOrder);
+    const resolved: EffectPlugin[] = [];
+    for (const key of order) {
+      const plugin = effectPluginMap.get(key);
+      if (plugin) {
+        resolved.push(plugin);
+      }
+    }
+    return resolved;
+  }, [effectPipelineOrder, effectPluginMap]);
   const dialogPages = useMemo(() => parseDialogPages(dialog.text), [dialog.text]);
   const currentDialogPage = clamp(dialog.page, 0, Math.max(0, dialogPages.length - 1));
   const currentDialogText = dialogPages[currentDialogPage] ?? "";
@@ -547,9 +818,94 @@ export function usePixelConverter(ghostSrc: string) {
     [strings],
   );
 
+  /**
+   * 释放图廊缩略图的对象 URL。/ Revoke object URLs used by gallery thumbnails.
+   * @param urls URL 列表 / URL list.
+   * @returns 无返回值 / No return value.
+   */
+  const releaseGalleryUrls = useCallback((urls: string[]) => {
+    for (const url of urls) {
+      URL.revokeObjectURL(url);
+    }
+  }, []);
+
+  /**
+   * 用数据库记录刷新图廊缓存。/ Refresh gallery cache from database records.
+   * @param records 图廊记录列表 / Gallery records.
+   * @returns 无返回值 / No return value.
+   */
+  const replaceGalleryItems = useCallback((records: GalleryImageRecord[]) => {
+    const nextBlobMap = new Map<string, Blob>();
+    const nextMetaMap: GalleryMetaMap = {};
+    const nextItems = records.map((record) => {
+      const meta = galleryMetaMapRef.current[record.id] ?? { favorite: false, tags: [] };
+      nextMetaMap[record.id] = {
+        favorite: Boolean(meta.favorite),
+        tags: normalizeGalleryTags(meta.tags),
+      };
+      const url = URL.createObjectURL(record.blob);
+      nextBlobMap.set(record.id, record.blob);
+      return {
+        id: record.id,
+        name: record.name,
+        createdAt: record.createdAt,
+        width: record.width,
+        height: record.height,
+        url,
+        favorite: nextMetaMap[record.id].favorite,
+        tags: nextMetaMap[record.id].tags,
+      };
+    });
+    releaseGalleryUrls(galleryUrlListRef.current);
+    galleryUrlListRef.current = nextItems.map((item) => item.url);
+    galleryBlobMapRef.current = nextBlobMap;
+    galleryMetaMapRef.current = nextMetaMap;
+    saveGalleryMetaMap(nextMetaMap);
+    setGalleryItems(nextItems);
+  }, [releaseGalleryUrls]);
+
+  /**
+   * 从本地数据库拉取图廊列表。/ Pull latest gallery list from local database.
+   * @returns 无返回值 / No return value.
+   */
+  const refreshGallery = useCallback(async () => {
+    try {
+      const records = await listGalleryImages();
+      replaceGalleryItems(records);
+    } catch {
+      // 图廊读取失败时保持当前 UI，不阻断主流程。/ Keep UI as-is when gallery read fails.
+    }
+  }, [replaceGalleryItems]);
+
   useEffect(() => {
     animationRef.current = animation;
   }, [animation]);
+
+  /**
+   * 更新源图预览 URL，并回收旧对象 URL。/ Update source preview URL and revoke previous object URL.
+   * @param file 源文件 / Source file.
+   * @returns 无返回值 / No return value.
+   */
+  const setSourcePreviewFromFile = useCallback((file: File) => {
+    const nextUrl = URL.createObjectURL(file);
+    if (sourcePreviewUrlRef.current) {
+      URL.revokeObjectURL(sourcePreviewUrlRef.current);
+    }
+    sourcePreviewUrlRef.current = nextUrl;
+    setSourcePreviewUrl(nextUrl);
+  }, []);
+
+  /**
+   * 清空源图预览 URL。/ Clear source preview URL.
+   * @returns 无返回值 / No return value.
+   */
+  const clearSourcePreview = useCallback(() => {
+    if (sourcePreviewUrlRef.current) {
+      URL.revokeObjectURL(sourcePreviewUrlRef.current);
+      sourcePreviewUrlRef.current = null;
+    }
+    setSourcePreviewUrl(null);
+  }, []);
 
   const resetMaskDataForGrid = useCallback((targetGrid: PixelGrid | null) => {
     setMask((previous) => {
@@ -569,6 +925,15 @@ export function usePixelConverter(ghostSrc: string) {
       };
     });
     dirtyRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (sourcePreviewUrlRef.current) {
+        URL.revokeObjectURL(sourcePreviewUrlRef.current);
+        sourcePreviewUrlRef.current = null;
+      }
+    };
   }, []);
 
   const pixelizeFileWithWorker = useCallback(async (file: File, targetPixelSize: number, paletteColors: PaletteColor[]) => {
@@ -644,6 +1009,18 @@ export function usePixelConverter(ghostSrc: string) {
   }, []);
 
   useEffect(() => {
+    void refreshGallery();
+  }, [refreshGallery]);
+
+  useEffect(() => {
+    return () => {
+      releaseGalleryUrls(galleryUrlListRef.current);
+      galleryUrlListRef.current = [];
+      galleryBlobMapRef.current.clear();
+    };
+  }, [releaseGalleryUrls]);
+
+  useEffect(() => {
     const maxPage = Math.max(0, dialogPages.length - 1);
     if (dialog.page > maxPage) {
       setDialog((previous) => ({ ...previous, page: maxPage }));
@@ -662,6 +1039,37 @@ export function usePixelConverter(ghostSrc: string) {
       setSelectedPresetId(null);
     }
   }, [presets, selectedPresetId]);
+
+  useEffect(() => {
+    if (!selectedFxPipelinePresetId) {
+      return;
+    }
+    if (!fxPipelinePresets.some((preset) => preset.id === selectedFxPipelinePresetId)) {
+      setSelectedFxPipelinePresetId(null);
+    }
+  }, [fxPipelinePresets, selectedFxPipelinePresetId]);
+
+  useEffect(() => {
+    setPaletteLocks((previous) => {
+      const nextLength = selectedPaletteColors.length;
+      if (nextLength <= 0) {
+        return [];
+      }
+      const next = new Array<boolean>(nextLength).fill(false);
+      for (let i = 0; i < Math.min(previous.length, nextLength); i += 1) {
+        next[i] = previous[i];
+      }
+      return next;
+    });
+  }, [selectedPaletteColors.length]);
+
+  useEffect(() => {
+    saveFxPipelinePresets(fxPipelinePresets);
+  }, [fxPipelinePresets]);
+
+  useEffect(() => {
+    setEffectPipelineOrder((previous) => normalizeEffectPipelineOrder(previous));
+  }, []);
 
   useEffect(() => {
     if (animation.playing) {
@@ -692,6 +1100,7 @@ export function usePixelConverter(ghostSrc: string) {
       setStatusKey("statusProcessing");
       const image = await fileToImage(file);
       sourceImageRef.current = image;
+      setSourcePreviewFromFile(file);
       setStatusKey("statusDone");
       let nextGrid: PixelGrid;
       if (performanceMode) {
@@ -711,7 +1120,7 @@ export function usePixelConverter(ghostSrc: string) {
     } catch {
       setStatusKey("statusReady");
     }
-  }, [performanceMode, pixelSize, pixelizeFileWithWorker, resetMaskDataForGrid, selectedPaletteColors]);
+  }, [performanceMode, pixelSize, pixelizeFileWithWorker, resetMaskDataForGrid, selectedPaletteColors, setSourcePreviewFromFile]);
 
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
@@ -790,6 +1199,75 @@ export function usePixelConverter(ghostSrc: string) {
       return next;
     });
   }, []);
+
+  const moveEffectInPipeline = useCallback((effectKey: keyof EffectsState, direction: -1 | 1) => {
+    setEffectPipelineOrder((previous) => {
+      const ordered = normalizeEffectPipelineOrder(previous);
+      const index = ordered.indexOf(effectKey);
+      if (index < 0) {
+        return ordered;
+      }
+      const nextIndex = clamp(index + direction, 0, ordered.length - 1);
+      if (nextIndex === index) {
+        return ordered;
+      }
+      const next = [...ordered];
+      next.splice(index, 1);
+      next.splice(nextIndex, 0, effectKey);
+      dirtyRef.current = true;
+      return next;
+    });
+  }, []);
+
+  const saveFxPipelinePreset = useCallback((name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setStatusKey("statusFxPipelineError");
+      return false;
+    }
+    if (fxPipelinePresets.length >= FX_PIPELINE_PRESET_LIMIT) {
+      setStatusKey("statusFxPipelineError");
+      return false;
+    }
+    const preset: FxPipelinePreset = {
+      id: randomId(),
+      name: trimmed,
+      order: normalizeEffectPipelineOrder(effectPipelineOrder),
+    };
+    setFxPipelinePresets((previous) => [preset, ...previous].slice(0, FX_PIPELINE_PRESET_LIMIT));
+    setSelectedFxPipelinePresetId(preset.id);
+    setStatusKey("statusFxPipelineSaved");
+    return true;
+  }, [effectPipelineOrder, fxPipelinePresets.length]);
+
+  const applyFxPipelinePreset = useCallback((presetId: string) => {
+    const target = fxPipelinePresets.find((item) => item.id === presetId);
+    if (!target) {
+      setStatusKey("statusFxPipelineError");
+      return false;
+    }
+    setEffectPipelineOrder(normalizeEffectPipelineOrder(target.order));
+    setSelectedFxPipelinePresetId(target.id);
+    setStatusKey("statusFxPipelineApplied");
+    dirtyRef.current = true;
+    return true;
+  }, [fxPipelinePresets]);
+
+  const deleteFxPipelinePreset = useCallback((presetId: string) => {
+    let removed = false;
+    setFxPipelinePresets((previous) => previous.filter((item) => {
+      const keep = item.id !== presetId;
+      if (!keep) {
+        removed = true;
+      }
+      return keep;
+    }));
+    if (selectedFxPipelinePresetId === presetId) {
+      setSelectedFxPipelinePresetId(null);
+    }
+    setStatusKey(removed ? "statusFxPipelineApplied" : "statusFxPipelineError");
+    return removed;
+  }, [selectedFxPipelinePresetId]);
 
   const patchDialog = useCallback((partial: Partial<DialogState>) => {
     setDialog((previous) => {
@@ -892,6 +1370,16 @@ export function usePixelConverter(ghostSrc: string) {
     dirtyRef.current = true;
   }, []);
 
+  const setMaskTool = useCallback((mode: MaskToolMode) => {
+    setMaskToolMode(mode);
+    dirtyRef.current = true;
+  }, []);
+
+  const setMaskFeatherStrength = useCallback((value: number) => {
+    setMaskFeather(clamp(Math.floor(value), 0, 16));
+    dirtyRef.current = true;
+  }, []);
+
   const setBrushSize = useCallback((brushSize: number) => {
     const nextBrush = clamp(Math.floor(brushSize), 1, 16);
     setMask((previous) => ({ ...previous, brushSize: nextBrush }));
@@ -933,6 +1421,65 @@ export function usePixelConverter(ghostSrc: string) {
     dirtyRef.current = true;
   }, []);
 
+  const applyMaskRectangleTool = useCallback((start: MaskPoint, end: MaskPoint) => {
+    setMask((previous) => {
+      if (!previous.data || previous.width <= 0 || previous.height <= 0) {
+        return previous;
+      }
+      const data = applyMaskRectangle(
+        previous.data,
+        previous.width,
+        previous.height,
+        start,
+        end,
+        previous.mode,
+        maskFeather,
+      );
+      return { ...previous, data };
+    });
+    dirtyRef.current = true;
+  }, [maskFeather]);
+
+  const applyMaskLassoTool = useCallback((points: MaskPoint[]) => {
+    if (points.length < 3) {
+      return;
+    }
+    setMask((previous) => {
+      if (!previous.data || previous.width <= 0 || previous.height <= 0) {
+        return previous;
+      }
+      const data = applyMaskPolygon(
+        previous.data,
+        previous.width,
+        previous.height,
+        points,
+        previous.mode,
+        maskFeather,
+      );
+      return { ...previous, data };
+    });
+    dirtyRef.current = true;
+  }, [maskFeather]);
+
+  const applyMaskGradientTool = useCallback((from: MaskPoint, to: MaskPoint) => {
+    setMask((previous) => {
+      if (!previous.data || previous.width <= 0 || previous.height <= 0) {
+        return previous;
+      }
+      const data = applyMaskGradient(
+        previous.data,
+        previous.width,
+        previous.height,
+        from,
+        to,
+        previous.mode,
+        maskFeather,
+      );
+      return { ...previous, data };
+    });
+    dirtyRef.current = true;
+  }, [maskFeather]);
+
   const clearMask = useCallback(() => {
     setMask((previous) => {
       if (!previous.width || !previous.height) {
@@ -966,6 +1513,57 @@ export function usePixelConverter(ghostSrc: string) {
     }));
     dirtyRef.current = true;
   }, [palette]);
+
+  const togglePaletteLock = useCallback((index: number) => {
+    setPaletteLocks((previous) => {
+      if (index < 0 || index >= previous.length) {
+        return previous;
+      }
+      const next = [...previous];
+      next[index] = !next[index];
+      return next;
+    });
+  }, []);
+
+  const clearPaletteLocks = useCallback(() => {
+    setPaletteLocks((previous) => previous.map(() => false));
+  }, []);
+
+  const extractPaletteFromSource = useCallback((requestedCount?: number) => {
+    const sourceImage = sourceImageRef.current;
+    if (!sourceImage) {
+      setStatusKey("statusPaletteSmartError");
+      return false;
+    }
+    const targetCount = clamp(Math.floor(requestedCount ?? selectedPaletteColors.length), 1, 64);
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = sourceImage.naturalWidth || sourceImage.width;
+    tempCanvas.height = sourceImage.naturalHeight || sourceImage.height;
+    const ctx = tempCanvas.getContext("2d");
+    if (!ctx) {
+      setStatusKey("statusPaletteSmartError");
+      return false;
+    }
+    ctx.drawImage(sourceImage, 0, 0, tempCanvas.width, tempCanvas.height);
+    const imageData = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+    const extracted = extractDominantColors(imageData, targetCount);
+    const nextPalette = applyPaletteWithLocks(selectedPaletteColors, extracted, paletteLocks);
+    setCurrentPaletteColors(nextPalette);
+    setStatusKey("statusPaletteSmartExtracted");
+    return true;
+  }, [paletteLocks, selectedPaletteColors, setCurrentPaletteColors]);
+
+  const mergeCurrentPaletteSimilar = useCallback((threshold: number) => {
+    const merged = mergeSimilarColors(selectedPaletteColors, threshold);
+    if (merged.length === 0) {
+      setStatusKey("statusPaletteSmartError");
+      return false;
+    }
+    const nextPalette = applyPaletteWithLocks(selectedPaletteColors, merged, paletteLocks);
+    setCurrentPaletteColors(nextPalette);
+    setStatusKey("statusPaletteSmartMerged");
+    return true;
+  }, [paletteLocks, selectedPaletteColors, setCurrentPaletteColors]);
 
   const updateCurrentPaletteColor = useCallback((index: number, color: PaletteColor) => {
     const next = [...selectedPaletteColors];
@@ -1189,27 +1787,145 @@ export function usePixelConverter(ghostSrc: string) {
     return true;
   }, []);
 
+  const captureParamHistorySnapshot = useCallback((label?: string) => {
+    if (historySuspendRef.current) {
+      return;
+    }
+    const snapshot: ParamHistorySnapshot = {
+      pixelSize,
+      palette,
+      paletteOverrides: JSON.parse(JSON.stringify(paletteOverrides)) as Partial<Record<PaletteId, PaletteColor[]>>,
+      effects: { ...effects },
+      effectTuning: { ...effectTuning },
+      dialog: { ...dialog },
+      maskConfig: toPresetMaskConfig(mask),
+      animation: cloneAnimationState(animation),
+      effectPipelineOrder: [...effectPipelineOrder],
+    };
+    const fingerprint = JSON.stringify(snapshot);
+    if (fingerprint === historyHashRef.current) {
+      return;
+    }
+    historyHashRef.current = fingerprint;
+    historyCounterRef.current += 1;
+    const entry: ParamHistoryEntry = {
+      id: randomId(),
+      createdAt: nowIso(),
+      label: label?.trim() || `${t("historyItemLabel")} #${historyCounterRef.current}`,
+      snapshot,
+    };
+    setParamHistory((previous) => [entry, ...previous].slice(0, HISTORY_LIMIT));
+  }, [animation, dialog, effectPipelineOrder, effectTuning, effects, mask, palette, paletteOverrides, pixelSize, t]);
+
+  useEffect(() => {
+    captureParamHistorySnapshot();
+  }, [captureParamHistorySnapshot]);
+
+  const restoreParamHistory = useCallback((entryId: string) => {
+    const entry = paramHistory.find((item) => item.id === entryId);
+    if (!entry) {
+      setStatusKey("statusHistoryError");
+      return false;
+    }
+    const snapshot = entry.snapshot;
+    const nextPaletteOverrides: Partial<Record<PaletteId, PaletteColor[]>> = {};
+    for (const [key, colors] of Object.entries(snapshot.paletteOverrides ?? {})) {
+      if (key in PALETTES) {
+        nextPaletteOverrides[key as PaletteId] = normalizePalette(colors as PaletteColor[]);
+      }
+    }
+    historySuspendRef.current = true;
+    setPixelSize(Math.max(1, Math.floor(snapshot.pixelSize)));
+    setPalette(snapshot.palette);
+    setPaletteOverrides(nextPaletteOverrides);
+    setEffects({ ...snapshot.effects });
+    setEffectTuning({ ...snapshot.effectTuning });
+    setDialog({ ...snapshot.dialog });
+    setAnimation(cloneAnimationState(snapshot.animation));
+    setEffectPipelineOrder(normalizeEffectPipelineOrder(snapshot.effectPipelineOrder));
+    const width = grid?.width ?? 0;
+    const height = grid?.height ?? 0;
+    setMask(createMaskStateFromConfig(snapshot.maskConfig, width, height));
+    revealCountRef.current = 0;
+    pageRevealFinishedAtRef.current = null;
+    dirtyRef.current = true;
+    window.setTimeout(() => {
+      historySuspendRef.current = false;
+      captureParamHistorySnapshot(entry.label);
+    }, 0);
+    setStatusKey("statusHistoryRestored");
+    return true;
+  }, [captureParamHistorySnapshot, grid?.height, grid?.width, paramHistory]);
+
+  const clearParamHistory = useCallback(() => {
+    setParamHistory([]);
+    historyCounterRef.current = 0;
+    historyHashRef.current = "";
+    setStatusKey("statusHistoryCleared");
+  }, []);
+
   const renderDialogForFrame: DialogState = useMemo(() => ({
     ...dialog,
     page: currentDialogPage,
     text: currentDialogText,
   }), [currentDialogPage, currentDialogText, dialog]);
 
-  const renderGridToExportCanvas = useCallback((inputGrid: PixelGrid, timeMs: number) => {
+  const getGridCacheId = useCallback((targetGrid: PixelGrid) => {
+    const cached = gridCacheIdRef.current.get(targetGrid);
+    if (cached) {
+      return cached;
+    }
+    const nextId = randomId();
+    gridCacheIdRef.current.set(targetGrid, nextId);
+    return nextId;
+  }, []);
+
+  const renderGridToExportCanvas = useCallback((
+    inputGrid: PixelGrid,
+    timeMs: number,
+    overrideTuning?: EffectTuning,
+  ) => {
+    const resolvedTuning = overrideTuning ?? effectTuning;
+    const cacheKey = [
+      getGridCacheId(inputGrid),
+      Math.round(timeMs),
+      JSON.stringify(resolvedTuning),
+      JSON.stringify(effects),
+      effectPipelineOrder.join(","),
+      dialog.style,
+      dialog.enabled ? 1 : 0,
+      mask.enabled ? 1 : 0,
+      mask.mode,
+      mask.brushSize,
+    ].join("|");
+    const cached = exportFrameCacheRef.current.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const tempCanvas = document.createElement("canvas");
     renderFrame(
       tempCanvas,
       inputGrid,
       effects,
-      effectTuning,
+      resolvedTuning,
       mask,
       renderDialogForFrame,
       Math.floor(revealCountRef.current),
       ghostRef.current,
       timeMs,
+      effectPlugins,
     );
-    return scaleCanvasForExport(tempCanvas, 1200);
-  }, [effects, effectTuning, mask, renderDialogForFrame]);
+    const scaled = scaleCanvasForExport(tempCanvas, 1200);
+    exportFrameCacheRef.current.set(cacheKey, scaled);
+    if (exportFrameCacheRef.current.size > 72) {
+      const oldest = exportFrameCacheRef.current.keys().next().value;
+      if (oldest) {
+        exportFrameCacheRef.current.delete(oldest);
+      }
+    }
+    return scaled;
+  }, [dialog.enabled, dialog.style, effectPipelineOrder, effectPlugins, effectTuning, effects, getGridCacheId, mask, renderDialogForFrame]);
 
   const processBatchFiles = useCallback(async (files: File[]) => {
     if (files.length === 0 || isBatchProcessing) {
@@ -1232,14 +1948,12 @@ export function usePixelConverter(ghostSrc: string) {
       let failed = 0;
       let retries = 0;
 
-      for (let i = 0; i < files.length; i += 1) {
-        const file = files[i];
+      const processOne = async (file: File, index: number) => {
         let success = false;
         setBatchProgress((previous) => ({
           ...previous,
           currentFile: file.name,
         }));
-
         for (let attempt = 0; attempt < BATCH_RETRY_LIMIT && !success; attempt += 1) {
           try {
             let batchGrid: PixelGrid;
@@ -1249,13 +1963,12 @@ export function usePixelConverter(ghostSrc: string) {
               const image = await fileToImage(file);
               batchGrid = imageToPixelGrid(image, pixelSize, selectedPaletteColors);
             }
-
-            const rendered = renderGridToExportCanvas(batchGrid, performance.now() + i * 120);
+            const rendered = renderGridToExportCanvas(batchGrid, performance.now() + index * 120);
             const blob = await new Promise<Blob | null>((resolve) => rendered.toBlob(resolve, "image/png"));
             if (!blob) {
               throw new Error("png_blob_error");
             }
-            const filename = `${formatBatchName(batchNamingTemplate, file.name, i + 1)}.png`;
+            const filename = `${formatBatchName(batchNamingTemplate, file.name, index + 1)}.png`;
             zip.file(filename, blob);
             completed += 1;
             success = true;
@@ -1265,7 +1978,6 @@ export function usePixelConverter(ghostSrc: string) {
             }
           }
         }
-
         if (!success) {
           failed += 1;
         }
@@ -1276,7 +1988,18 @@ export function usePixelConverter(ghostSrc: string) {
           retries,
           currentFile: file.name,
         }));
-      }
+      };
+
+      const concurrency = performanceMode ? Math.min(BATCH_WORKER_CONCURRENCY, files.length) : 1;
+      let cursor = 0;
+      const workers = Array.from({ length: concurrency }, async () => {
+        while (cursor < files.length) {
+          const index = cursor;
+          cursor += 1;
+          await processOne(files[index], index);
+        }
+      });
+      await Promise.all(workers);
 
       if (completed > 0) {
         const zipBlob = await zip.generateAsync(
@@ -1340,26 +2063,201 @@ export function usePixelConverter(ghostSrc: string) {
     goDialogPage(currentDialogPage - 1);
   }, [currentDialogPage, goDialogPage]);
 
-  const onDownloadPng = useCallback(() => {
+  /**
+   * 触发 Blob 文件下载。/ Trigger a file download from Blob.
+   * @param blob 文件内容 / File blob.
+   * @param filename 下载文件名 / Download filename.
+   * @returns 无返回值 / No return value.
+   */
+  const downloadBlobFile = useCallback((blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  /**
+   * 把当前预览画布渲染为导出 PNG。/ Render current preview canvas to exportable PNG blob.
+   * @returns PNG 数据与尺寸；无数据时返回 null / PNG blob payload or null.
+   */
+  const createExportPng = useCallback(async (): Promise<{ blob: Blob; width: number; height: number } | null> => {
     const canvas = canvasRef.current;
     if (!canvas || !grid) {
-      return;
+      return null;
     }
     const exportCanvas = scaleCanvasForExport(canvas, 1200);
-    exportCanvas.toBlob((blob) => {
-      if (!blob) {
-        return;
-      }
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "pixel-art.png";
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      URL.revokeObjectURL(url);
-    }, "image/png");
+    const blob = await new Promise<Blob | null>((resolve) => exportCanvas.toBlob(resolve, "image/png"));
+    if (!blob) {
+      return null;
+    }
+    return {
+      blob,
+      width: exportCanvas.width,
+      height: exportCanvas.height,
+    };
   }, [grid]);
+
+  /**
+   * 保存图片到本地图廊。/ Save an image blob into local gallery storage.
+   * @param blob 图片数据 / Image blob.
+   * @param width 图片宽度 / Image width.
+   * @param height 图片高度 / Image height.
+   * @param name 文件名 / File name.
+   * @returns 是否保存成功 / True when save succeeds.
+   */
+  const saveBlobToGallery = useCallback(async (blob: Blob, width: number, height: number, name: string) => {
+    try {
+      await saveGalleryImage({
+        name,
+        width,
+        height,
+        blob,
+      });
+      await refreshGallery();
+      setStatusKey("statusGallerySaved");
+      return true;
+    } catch {
+      return false;
+    }
+  }, [refreshGallery]);
+
+  /**
+   * 手动保存当前图像到本地图廊。/ Manually save current image to local gallery.
+   * @returns 是否保存成功 / True when save succeeds.
+   */
+  const saveCurrentToGallery = useCallback(async () => {
+    const exported = await createExportPng();
+    if (!exported) {
+      return false;
+    }
+    return saveBlobToGallery(
+      exported.blob,
+      exported.width,
+      exported.height,
+      `pixel-art-${Date.now()}.png`,
+    );
+  }, [createExportPng, saveBlobToGallery]);
+
+  /**
+   * 下载图廊中单张图片。/ Download one image from gallery.
+   * @param imageId 图廊图片 ID / Gallery image id.
+   * @returns 无返回值 / No return value.
+   */
+  const downloadGalleryItem = useCallback((imageId: string) => {
+    const blob = galleryBlobMapRef.current.get(imageId);
+    if (!blob) {
+      return;
+    }
+    const target = galleryItems.find((item) => item.id === imageId);
+    const baseName = target?.name.trim() || `pixel-art-${Date.now()}`;
+    const fileName = /\.png$/i.test(baseName) ? baseName : `${baseName}.png`;
+    downloadBlobFile(blob, fileName);
+  }, [downloadBlobFile, galleryItems]);
+
+  /**
+   * 删除图廊图片。/ Delete one gallery image.
+   * @param imageId 图廊图片 ID / Gallery image id.
+   * @returns 无返回值 / No return value.
+   */
+  const removeGalleryItem = useCallback(async (imageId: string) => {
+    try {
+      await deleteGalleryImage(imageId);
+      const nextMetaMap = { ...galleryMetaMapRef.current };
+      delete nextMetaMap[imageId];
+      galleryMetaMapRef.current = nextMetaMap;
+      saveGalleryMetaMap(nextMetaMap);
+      await refreshGallery();
+    } catch {
+      // 删除失败不阻断主流程。/ Ignore delete failures to keep main workflow responsive.
+    }
+  }, [refreshGallery]);
+
+  /**
+   * 清空图廊所有图片。/ Clear all gallery images.
+   * @returns 无返回值 / No return value.
+   */
+  const clearGallery = useCallback(async () => {
+    try {
+      await clearGalleryImages();
+      galleryMetaMapRef.current = {};
+      saveGalleryMetaMap({});
+      await refreshGallery();
+    } catch {
+      // 清空失败保持当前状态。/ Keep current state when clear operation fails.
+    }
+  }, [refreshGallery]);
+
+  const setGalleryMeta = useCallback((imageId: string, partial: Partial<GalleryMeta>) => {
+    const previousMeta = galleryMetaMapRef.current[imageId] ?? { favorite: false, tags: [] };
+    const nextMeta: GalleryMeta = {
+      favorite: partial.favorite ?? previousMeta.favorite,
+      tags: partial.tags ? normalizeGalleryTags(partial.tags) : previousMeta.tags,
+    };
+    galleryMetaMapRef.current = {
+      ...galleryMetaMapRef.current,
+      [imageId]: nextMeta,
+    };
+    saveGalleryMetaMap(galleryMetaMapRef.current);
+    setGalleryItems((previous) => previous.map((item) => (
+      item.id === imageId
+        ? { ...item, favorite: nextMeta.favorite, tags: nextMeta.tags }
+        : item
+    )));
+  }, []);
+
+  const toggleGalleryFavorite = useCallback((imageId: string) => {
+    const current = galleryMetaMapRef.current[imageId]?.favorite ?? false;
+    setGalleryMeta(imageId, { favorite: !current });
+  }, [setGalleryMeta]);
+
+  const updateGalleryTags = useCallback((imageId: string, rawInput: string) => {
+    const tags = normalizeGalleryTags(rawInput.split(/[,\n]/g));
+    setGalleryMeta(imageId, { tags });
+  }, [setGalleryMeta]);
+
+  const downloadGalleryItemsBulk = useCallback((imageIds: string[]) => {
+    const ids = imageIds.filter((id, index) => imageIds.indexOf(id) === index);
+    for (const id of ids) {
+      downloadGalleryItem(id);
+    }
+  }, [downloadGalleryItem]);
+
+  const removeGalleryItemsBulk = useCallback(async (imageIds: string[]) => {
+    const ids = imageIds.filter((id, index) => imageIds.indexOf(id) === index);
+    if (ids.length === 0) {
+      return;
+    }
+    try {
+      await Promise.all(ids.map((id) => deleteGalleryImage(id)));
+      const nextMetaMap = { ...galleryMetaMapRef.current };
+      for (const id of ids) {
+        delete nextMetaMap[id];
+      }
+      galleryMetaMapRef.current = nextMetaMap;
+      saveGalleryMetaMap(nextMetaMap);
+      await refreshGallery();
+    } catch {
+      // 批量删除失败不阻断主流程。/ Ignore bulk delete failures.
+    }
+  }, [refreshGallery]);
+
+  const onDownloadPng = useCallback(async () => {
+    const exported = await createExportPng();
+    if (!exported) {
+      return;
+    }
+    downloadBlobFile(exported.blob, "pixel-art.png");
+    void saveBlobToGallery(
+      exported.blob,
+      exported.width,
+      exported.height,
+      `pixel-art-${Date.now()}.png`,
+    );
+  }, [createExportPng, downloadBlobFile, saveBlobToGallery]);
 
   const updateGridIndices = useCallback((nextIndices: Uint16Array) => {
     setGrid((previous) => {
@@ -1392,6 +2290,7 @@ export function usePixelConverter(ghostSrc: string) {
       selectedPresetId,
       batchNamingTemplate,
       performanceMode,
+      effectPipelineOrder: normalizeEffectPipelineOrder(effectPipelineOrder),
       animation: {
         ...animation,
         startTuning: cloneEffectTuning(animation.startTuning),
@@ -1410,7 +2309,7 @@ export function usePixelConverter(ghostSrc: string) {
     document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
     setStatusKey("statusProjectSaved");
-  }, [animation, batchNamingTemplate, dialog, effectTuning, effects, grid, mask, palette, paletteOverrides, performanceMode, pixelSize, presets, selectedPresetId]);
+  }, [animation, batchNamingTemplate, dialog, effectPipelineOrder, effectTuning, effects, grid, mask, palette, paletteOverrides, performanceMode, pixelSize, presets, selectedPresetId]);
 
   const onImportProject = useCallback(async (file: File) => {
     const text = await file.text();
@@ -1445,6 +2344,11 @@ export function usePixelConverter(ghostSrc: string) {
     setDialog({ ...state.dialog });
     setBatchNamingTemplate(typeof state.batchNamingTemplate === "string" ? state.batchNamingTemplate : defaultBatchNamingTemplate());
     setPerformanceMode(Boolean(state.performanceMode));
+    const stateWithPipeline = state as unknown as { effectPipelineOrder?: Array<keyof EffectsState> };
+    if (Array.isArray(stateWithPipeline.effectPipelineOrder)) {
+      const rawOrder = stateWithPipeline.effectPipelineOrder;
+      setEffectPipelineOrder(normalizeEffectPipelineOrder(rawOrder));
+    }
     if (state.animation && typeof state.animation === "object") {
       const raw = state.animation as Partial<AnimationState>;
       const durationMs = clamp(Math.round(Number(raw.durationMs ?? 2600)), 300, 15000);
@@ -1466,6 +2370,8 @@ export function usePixelConverter(ghostSrc: string) {
     setSelectedPresetId(typeof state.selectedPresetId === "string" ? state.selectedPresetId : null);
 
     const importedGrid = state.gridSnapshot ? fromGridSnapshot(state.gridSnapshot) : null;
+    sourceImageRef.current = null;
+    clearSourcePreview();
     setGrid(importedGrid);
 
     const nextMask = createMaskStateFromConfig(
@@ -1486,7 +2392,7 @@ export function usePixelConverter(ghostSrc: string) {
     dirtyRef.current = true;
     setStatusKey("statusProjectLoaded");
     return true;
-  }, []);
+  }, [clearSourcePreview]);
 
   const onExportJson = useCallback(() => {
     if (!grid) {
@@ -1556,6 +2462,8 @@ export function usePixelConverter(ghostSrc: string) {
       colors,
     };
 
+    sourceImageRef.current = null;
+    clearSourcePreview();
     setGrid(nextGrid);
     resetMaskDataForGrid(nextGrid);
     setPixelSize(nextPixelSize);
@@ -1566,7 +2474,7 @@ export function usePixelConverter(ghostSrc: string) {
     revealCountRef.current = 0;
     dirtyRef.current = true;
     setStatusKey("statusDone");
-  }, [pixelSize, resetMaskDataForGrid]);
+  }, [clearSourcePreview, pixelSize, resetMaskDataForGrid]);
 
   const onOpenFlipbook = useCallback(() => {
     if (!grid) {
@@ -1692,9 +2600,117 @@ export function usePixelConverter(ghostSrc: string) {
     }
   }, [canRecordVideo, grid, isRecording]);
 
+  /**
+   * 根据当前状态生成动画导出帧。/ Build export frames from current settings.
+   * @param fps 目标帧率 / Target FPS.
+   * @returns 导出帧与尺寸信息 / Frames and dimensions.
+   */
+  const createAnimatedExportFrames = useCallback((fps: number) => {
+    if (!grid) {
+      return null;
+    }
+    const safeFps = clamp(Math.round(fps), 1, 30);
+    const timedFxActive =
+      effects.glitch
+      || effects.paletteCycle
+      || effects.ghost
+      || effects.ditherFade
+      || effects.waveWarp
+      || animation.enabled;
+    const targetDuration = animation.enabled ? Math.max(300, animation.durationMs) : 2400;
+    const estimatedFrames = timedFxActive
+      ? Math.max(2, Math.round((targetDuration / 1000) * safeFps))
+      : 1;
+    const frameCount = Math.min(EXPORT_FRAME_CAP, estimatedFrames);
+    const frameDelayMs = Math.max(20, Math.round(1000 / safeFps));
+    const frames: HTMLCanvasElement[] = [];
+    const animationSnapshot = animationRef.current;
+    for (let i = 0; i < frameCount; i += 1) {
+      const progress = frameCount <= 1 ? clamp(animationSnapshot.progress, 0, 1) : i / frameCount;
+      const tuningForFrame = animationSnapshot.enabled
+        ? interpolateEffectTuning(animationSnapshot.startTuning, animationSnapshot.endTuning, progress)
+        : effectTuning;
+      const rendered = renderGridToExportCanvas(grid, performance.now() + i * frameDelayMs, tuningForFrame);
+      frames.push(rendered);
+    }
+    if (frames.length === 0) {
+      return null;
+    }
+    return {
+      frames,
+      width: frames[0].width,
+      height: frames[0].height,
+      delayMs: frameDelayMs,
+    };
+  }, [animation.enabled, animation.durationMs, effectTuning, effects.ditherFade, effects.ghost, effects.glitch, effects.paletteCycle, effects.waveWarp, grid, renderGridToExportCanvas]);
+
+  const onDownloadGif = useCallback(async () => {
+    if (isRecording) {
+      return;
+    }
+    const exported = createAnimatedExportFrames(gifFps);
+    if (!exported) {
+      return;
+    }
+    const encoder = GIFEncoder({ auto: false });
+    const repeat = exportLoopCount < 0 ? 0 : exportLoopCount;
+    for (let i = 0; i < exported.frames.length; i += 1) {
+      const frame = exported.frames[i];
+      const ctx = frame.getContext("2d", { willReadFrequently: true });
+      if (!ctx) {
+        continue;
+      }
+      const { data } = ctx.getImageData(0, 0, exported.width, exported.height);
+      const paletteData = quantize(data, 256, { format: "rgb565" });
+      const indexed = applyPalette(data, paletteData, "rgb565");
+      encoder.writeFrame(indexed, exported.width, exported.height, {
+        palette: paletteData,
+        delay: Math.max(2, Math.round(exported.delayMs / 10)),
+        repeat,
+        first: i === 0,
+      });
+    }
+    encoder.finish();
+    const bytes = encoder.bytesView();
+    const normalizedBytes = new Uint8Array(bytes);
+    downloadBlobFile(new Blob([normalizedBytes], { type: "image/gif" }), "pixel-art.gif");
+    setStatusKey("statusExportGifDone");
+  }, [createAnimatedExportFrames, downloadBlobFile, exportLoopCount, gifFps, isRecording]);
+
+  const onDownloadApng = useCallback(async () => {
+    if (isRecording) {
+      return;
+    }
+    const exported = createAnimatedExportFrames(apngFps);
+    if (!exported) {
+      return;
+    }
+    const rgbaFrames: ArrayBuffer[] = [];
+    const delays: number[] = [];
+    for (const frame of exported.frames) {
+      const ctx = frame.getContext("2d", { willReadFrequently: true });
+      if (!ctx) {
+        continue;
+      }
+      const { data } = ctx.getImageData(0, 0, exported.width, exported.height);
+      rgbaFrames.push(data.buffer.slice(0));
+      delays.push(exported.delayMs);
+    }
+    if (rgbaFrames.length === 0) {
+      return;
+    }
+    const encoded = UPNG.encode(rgbaFrames, exported.width, exported.height, 0, delays);
+    downloadBlobFile(new Blob([encoded], { type: "image/png" }), "pixel-art.apng");
+    setStatusKey("statusExportApngDone");
+  }, [apngFps, createAnimatedExportFrames, downloadBlobFile, isRecording]);
+
   useEffect(() => {
     dirtyRef.current = true;
-  }, [grid, effects, effectTuning, dialog, lang, palette, pixelSize, mask, performanceMode, animation]);
+  }, [animation, dialog, effectPipelineOrder, effectTuning, effects, grid, lang, mask, palette, performanceMode, pixelSize]);
+
+  useEffect(() => {
+    exportFrameCacheRef.current.clear();
+  }, [animation, dialog, effectPipelineOrder, effectTuning, effects, grid, mask]);
 
   useEffect(() => {
     let rafId = 0;
@@ -1825,6 +2841,7 @@ export function usePixelConverter(ghostSrc: string) {
             Math.floor(revealCountRef.current),
             ghostRef.current,
             nowMs,
+            effectPlugins,
           );
           lastRenderCommitRef.current = nowMs;
           dirtyRef.current = false;
@@ -1837,7 +2854,7 @@ export function usePixelConverter(ghostSrc: string) {
     return () => {
       window.cancelAnimationFrame(rafId);
     };
-  }, [currentDialogPage, dialog, dialogPages.length, effectTuning, effects, grid, isRecording, mask, performanceMode, renderDialogForFrame]);
+  }, [currentDialogPage, dialog, dialogPages.length, effectPlugins, effectTuning, effects, grid, isRecording, mask, performanceMode, renderDialogForFrame]);
 
   useEffect(() => {
     const overlay = maskCanvasRef.current;
@@ -1910,7 +2927,17 @@ export function usePixelConverter(ghostSrc: string) {
     animation,
     dialog,
     mask,
+    maskToolMode,
+    maskFeather,
     presets,
+    paramHistory,
+    galleryItems,
+    sourcePreviewUrl,
+    paletteLocks,
+    effectPipelineOrder,
+    fxPipelinePresets,
+    selectedFxPipelinePresetId,
+    setSelectedFxPipelinePresetId,
     selectedPresetId,
     setSelectedPresetId,
     patchDialog,
@@ -1925,18 +2952,33 @@ export function usePixelConverter(ghostSrc: string) {
     stopAnimationPlayback,
     setMaskEnabled,
     setMaskMode,
+    setMaskTool,
+    setMaskFeatherStrength,
     setBrushSize,
     toggleMaskOverlay,
     toggleMaskFx,
     paintMaskStroke,
+    applyMaskRectangleTool,
+    applyMaskLassoTool,
+    applyMaskGradientTool,
     clearMask,
     invertMask,
+    restoreParamHistory,
+    clearParamHistory,
     savePreset,
     applyPreset,
     renamePreset,
     deletePreset,
     exportPresets,
     importPresets,
+    saveCurrentToGallery,
+    downloadGalleryItem,
+    downloadGalleryItemsBulk,
+    removeGalleryItem,
+    removeGalleryItemsBulk,
+    clearGallery,
+    toggleGalleryFavorite,
+    updateGalleryTags,
     onExportProject,
     onImportProject,
     isDragging,
@@ -1953,6 +2995,8 @@ export function usePixelConverter(ghostSrc: string) {
     onDragOver,
     onDragLeave,
     onDownloadPng,
+    onDownloadGif,
+    onDownloadApng,
     onDownloadVideo,
     onExportJson,
     onImportJson,
@@ -1966,7 +3010,17 @@ export function usePixelConverter(ghostSrc: string) {
     setBatchNamingTemplate,
     performanceMode,
     setPerformanceMode,
+    gifFps,
+    setGifFps,
+    apngFps,
+    setApngFps,
+    exportLoopCount,
+    setExportLoopCount,
     toggleEffect,
+    moveEffectInPipeline,
+    saveFxPipelinePreset,
+    applyFxPipelinePreset,
+    deleteFxPipelinePreset,
     paletteColorsById,
     currentPaletteColors: selectedPaletteColors,
     setCurrentPaletteColors,
@@ -1974,6 +3028,10 @@ export function usePixelConverter(ghostSrc: string) {
     addCurrentPaletteColor,
     removeCurrentPaletteColor,
     resetCurrentPalette,
+    togglePaletteLock,
+    clearPaletteLocks,
+    extractPaletteFromSource,
+    mergeCurrentPaletteSimilar,
     onImportPalette,
     onExportPalette,
     dialogPages,

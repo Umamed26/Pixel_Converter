@@ -163,6 +163,8 @@ const DIALOG_THEME_CONFIG: Record<DialogState["style"], DialogThemeConfig> = {
 };
 
 const EFFECT_TICK_MS = 120;
+const GRID_TILE_SIZE = 64;
+const TILE_RENDER_THRESHOLD = 24_000;
 
 /**
  * 限制数值到区间。/ Clamp number into range.
@@ -238,6 +240,25 @@ function drawGrid(ctx: CanvasRenderingContext2D, grid: PixelGrid): void {
   if (!colors.length) {
     return;
   }
+  const cellCount = width * height;
+  if (cellCount > TILE_RENDER_THRESHOLD) {
+    for (let tileY = 0; tileY < height; tileY += GRID_TILE_SIZE) {
+      const endY = Math.min(height, tileY + GRID_TILE_SIZE);
+      for (let tileX = 0; tileX < width; tileX += GRID_TILE_SIZE) {
+        const endX = Math.min(width, tileX + GRID_TILE_SIZE);
+        for (let y = tileY; y < endY; y += 1) {
+          for (let x = tileX; x < endX; x += 1) {
+            const i = y * width + x;
+            const colorIndex = indices[i];
+            const [r, g, b] = colors[colorIndex] ?? [0, 0, 0];
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
+          }
+        }
+      }
+    }
+    return;
+  }
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -292,14 +313,23 @@ function mergeMaskedEffectResult(
     const rowOffset = cellY * gridWidth;
     for (let x = 0; x < canvasWidth; x += 1) {
       const cellX = Math.min(gridWidth - 1, Math.floor(x / pixelSize));
-      if (maskData[rowOffset + cellX] > 0) {
+      const maskAlpha = maskData[rowOffset + cellX];
+      if (maskAlpha >= 255) {
         continue;
       }
       const pixelOffset = (y * canvasWidth + x) * 4;
-      afterPixels[pixelOffset] = beforePixels[pixelOffset];
-      afterPixels[pixelOffset + 1] = beforePixels[pixelOffset + 1];
-      afterPixels[pixelOffset + 2] = beforePixels[pixelOffset + 2];
-      afterPixels[pixelOffset + 3] = beforePixels[pixelOffset + 3];
+      if (maskAlpha <= 0) {
+        afterPixels[pixelOffset] = beforePixels[pixelOffset];
+        afterPixels[pixelOffset + 1] = beforePixels[pixelOffset + 1];
+        afterPixels[pixelOffset + 2] = beforePixels[pixelOffset + 2];
+        afterPixels[pixelOffset + 3] = beforePixels[pixelOffset + 3];
+        continue;
+      }
+      const blend = maskAlpha / 255;
+      afterPixels[pixelOffset] = Math.round(beforePixels[pixelOffset] + (afterPixels[pixelOffset] - beforePixels[pixelOffset]) * blend);
+      afterPixels[pixelOffset + 1] = Math.round(beforePixels[pixelOffset + 1] + (afterPixels[pixelOffset + 1] - beforePixels[pixelOffset + 1]) * blend);
+      afterPixels[pixelOffset + 2] = Math.round(beforePixels[pixelOffset + 2] + (afterPixels[pixelOffset + 2] - beforePixels[pixelOffset + 2]) * blend);
+      afterPixels[pixelOffset + 3] = Math.round(beforePixels[pixelOffset + 3] + (afterPixels[pixelOffset + 3] - beforePixels[pixelOffset + 3]) * blend);
     }
   }
 }
