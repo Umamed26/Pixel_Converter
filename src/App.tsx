@@ -1,5 +1,5 @@
 // 应用主壳层：负责组合桌面 UI、连接交互与状态。/ App shell: composes desktop UI and wires stateful interactions.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import mascotPixelbot from "./assets/mascot_pixelbot.png";
 import { BRAND } from "./config/brand";
 import { GHOST_MESSAGES, type PaletteId } from "./config/constants";
@@ -12,8 +12,69 @@ import type { DialogState } from "./types";
 import "./styles/studio.css";
 
 type UiMode = "basic" | "advanced";
+type ThemeMode = "light" | "dark";
+type ShortcutScope = "global" | "advanced";
+
+interface ShortcutBinding {
+  id: string;
+  combo: string;
+  labelKey: string;
+  scope: ShortcutScope;
+  run: () => void;
+}
 
 const UI_MODE_STORAGE_KEY = "pixel_workshop_ui_mode_v1";
+const THEME_MODE_STORAGE_KEY = "pixel_workshop_theme_mode_v1";
+const LEFT_PANEL_WIDTH_STORAGE_KEY = "pixel_workshop_left_panel_width_v1";
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element) {
+    return false;
+  }
+  const tagName = element.tagName;
+  return element.isContentEditable || tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT";
+}
+
+function normalizeShortcutKey(key: string): string {
+  if (key === " ") {
+    return "Space";
+  }
+  if (key === "Esc") {
+    return "Escape";
+  }
+  if (key === "ArrowLeft") {
+    return "Left";
+  }
+  if (key === "ArrowRight") {
+    return "Right";
+  }
+  if (key === "ArrowUp") {
+    return "Up";
+  }
+  if (key === "ArrowDown") {
+    return "Down";
+  }
+  if (key.length === 1) {
+    return key.toUpperCase();
+  }
+  return key;
+}
+
+function eventToShortcutCombo(event: KeyboardEvent): string {
+  const parts: string[] = [];
+  if (event.ctrlKey || event.metaKey) {
+    parts.push("Ctrl");
+  }
+  if (event.shiftKey) {
+    parts.push("Shift");
+  }
+  if (event.altKey) {
+    parts.push("Alt");
+  }
+  parts.push(normalizeShortcutKey(event.key));
+  return parts.join("+");
+}
 
 function App() {
   const {
@@ -24,6 +85,8 @@ function App() {
     statusKey,
     pixelSize,
     setPixelSize,
+    pixelizeAlgorithm,
+    setPixelizeAlgorithm,
     palette,
     setPalette,
     effects,
@@ -35,6 +98,9 @@ function App() {
     maskFeather,
     presets,
     paramHistory,
+    activeParamHistoryId,
+    canUndoParamHistory,
+    canRedoParamHistory,
     galleryItems,
     sourcePreviewUrl,
     paletteLocks,
@@ -68,6 +134,8 @@ function App() {
     clearMask,
     invertMask,
     restoreParamHistory,
+    undoParamHistory,
+    redoParamHistory,
     clearParamHistory,
     savePreset,
     applyPreset,
@@ -101,6 +169,7 @@ function App() {
     onDownloadPng,
     onDownloadGif,
     onDownloadApng,
+    onDownloadSpriteSheet,
     onDownloadVideo,
     onExportJson,
     onImportJson,
@@ -114,17 +183,27 @@ function App() {
     setBatchNamingTemplate,
     performanceMode,
     setPerformanceMode,
+    webglSupported,
+    webglAcceleration,
+    setWebglAcceleration,
     gifFps,
     setGifFps,
     apngFps,
     setApngFps,
     exportLoopCount,
     setExportLoopCount,
+    spriteColumns,
+    setSpriteColumns,
     toggleEffect,
     moveEffectInPipeline,
     saveFxPipelinePreset,
     applyFxPipelinePreset,
     deleteFxPipelinePreset,
+    externalPlugins,
+    unregisterExternalPlugin,
+    importExternalPlugin,
+    setExternalPluginEnabled,
+    setExternalPluginStrength,
     paletteColorsById,
     currentPaletteColors,
     updateCurrentPaletteColor,
@@ -170,6 +249,17 @@ function App() {
     const saved = window.localStorage.getItem(UI_MODE_STORAGE_KEY);
     return saved === "advanced" ? "advanced" : "basic";
   });
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    const saved = window.localStorage.getItem(THEME_MODE_STORAGE_KEY);
+    return saved === "dark" ? "dark" : "light";
+  });
+  const [leftPanelWidth, setLeftPanelWidth] = useState<number>(() => {
+    const saved = Number(window.localStorage.getItem(LEFT_PANEL_WIDTH_STORAGE_KEY) ?? "");
+    if (!Number.isFinite(saved)) {
+      return 238;
+    }
+    return Math.max(200, Math.min(360, Math.round(saved)));
+  });
   const aboutRef = useRef<HTMLDialogElement>(null);
   const docsRef = useRef<HTMLDialogElement>(null);
   const changelogRef = useRef<HTMLDialogElement>(null);
@@ -177,6 +267,7 @@ function App() {
   const projectInputRef = useRef<HTMLInputElement>(null);
   const paletteInputRef = useRef<HTMLInputElement>(null);
   const presetInputRef = useRef<HTMLInputElement>(null);
+  const pluginInputRef = useRef<HTMLInputElement>(null);
   const isMaskDrawingRef = useRef(false);
   const lastMaskPointRef = useRef<{ x: number; y: number } | null>(null);
   const maskShapeStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -186,6 +277,10 @@ function App() {
   const isAdvancedMode = uiMode === "advanced";
 
   const ghostMessages = useMemo(() => GHOST_MESSAGES[lang], [lang]);
+  const mainShellStyle = useMemo(
+    () => ({ "--left-panel-width": `${leftPanelWidth}px` }) as CSSProperties,
+    [leftPanelWidth],
+  );
   const paletteKeys = Object.keys(lists.palettes) as PaletteId[];
   const filteredGalleryItems = useMemo(() => {
     if (!isAdvancedMode) {
@@ -225,6 +320,106 @@ function App() {
     const nextIndex = (baseIndex + step + filteredGalleryItems.length) % filteredGalleryItems.length;
     setSelectedGalleryId(filteredGalleryItems[nextIndex].id);
   }, [filteredGalleryItems, selectedGalleryId]);
+
+  const shortcutBindings = useMemo<ShortcutBinding[]>(() => {
+    const bindings: ShortcutBinding[] = [
+      {
+        id: "open_file",
+        combo: "Ctrl+O",
+        labelKey: "shortcutOpenFile",
+        scope: "global",
+        run: () => onPickFile(),
+      },
+      {
+        id: "export_png",
+        combo: "Ctrl+S",
+        labelKey: "shortcutExportPng",
+        scope: "global",
+        run: () => {
+          void onDownloadPng();
+        },
+      },
+      {
+        id: "undo_params",
+        combo: "Ctrl+Z",
+        labelKey: "shortcutUndo",
+        scope: "global",
+        run: () => {
+          undoParamHistory();
+        },
+      },
+      {
+        id: "redo_params",
+        combo: "Ctrl+Y",
+        labelKey: "shortcutRedo",
+        scope: "global",
+        run: () => {
+          redoParamHistory();
+        },
+      },
+      {
+        id: "redo_params_alt",
+        combo: "Ctrl+Shift+Z",
+        labelKey: "shortcutRedoAlt",
+        scope: "global",
+        run: () => {
+          redoParamHistory();
+        },
+      },
+      {
+        id: "toggle_theme",
+        combo: "Ctrl+L",
+        labelKey: "shortcutToggleTheme",
+        scope: "global",
+        run: () => setThemeMode((previous) => (previous === "light" ? "dark" : "light")),
+      },
+      {
+        id: "toggle_editor",
+        combo: "Ctrl+E",
+        labelKey: "shortcutToggleEditor",
+        scope: "global",
+        run: () => setEditorOpen((previous) => !previous),
+      },
+      {
+        id: "open_batch",
+        combo: "Ctrl+Shift+O",
+        labelKey: "shortcutBatch",
+        scope: "advanced",
+        run: () => onPickBatchFiles(),
+      },
+      {
+        id: "save_gallery",
+        combo: "Ctrl+Shift+S",
+        labelKey: "shortcutSaveGallery",
+        scope: "advanced",
+        run: () => {
+          void saveCurrentToGallery();
+        },
+      },
+      {
+        id: "toggle_palette_editor",
+        combo: "Ctrl+P",
+        labelKey: "shortcutPaletteEditor",
+        scope: "advanced",
+        run: () => setPaletteEditorOpen((previous) => !previous),
+      },
+      {
+        id: "mode_basic",
+        combo: "Ctrl+1",
+        labelKey: "shortcutModeBasic",
+        scope: "global",
+        run: () => setUiMode("basic"),
+      },
+      {
+        id: "mode_advanced",
+        combo: "Ctrl+2",
+        labelKey: "shortcutModeAdvanced",
+        scope: "global",
+        run: () => setUiMode("advanced"),
+      },
+    ];
+    return bindings.filter((binding) => binding.scope === "global" || isAdvancedMode);
+  }, [isAdvancedMode, onDownloadPng, onPickBatchFiles, onPickFile, redoParamHistory, saveCurrentToGallery, undoParamHistory]);
 
   useEffect(() => {
     if (filteredGalleryItems.length === 0) {
@@ -275,6 +470,33 @@ function App() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [filteredGalleryItems.length, goGalleryStep]);
+
+  useEffect(() => {
+    const map = new Map(shortcutBindings.map((item) => [item.combo, item]));
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      if (isTypingTarget(event.target)) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".editor-window")) {
+        return;
+      }
+      const combo = eventToShortcutCombo(event);
+      const binding = map.get(combo);
+      if (!binding) {
+        return;
+      }
+      event.preventDefault();
+      binding.run();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [shortcutBindings]);
 
   useEffect(() => {
     const syncDialog = (node: HTMLDialogElement | null, open: boolean) => {
@@ -330,6 +552,16 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(UI_MODE_STORAGE_KEY, uiMode);
   }, [uiMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_MODE_STORAGE_KEY, themeMode);
+    document.documentElement.setAttribute("data-theme", themeMode);
+    document.body.classList.toggle("theme-dark", themeMode === "dark");
+  }, [themeMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(LEFT_PANEL_WIDTH_STORAGE_KEY, String(leftPanelWidth));
+  }, [leftPanelWidth]);
 
   useEffect(() => {
     if (isAdvancedMode) {
@@ -517,6 +749,18 @@ function App() {
     setStartMenuOpen(false);
   }, []);
 
+  const onOpenPluginImport = useCallback(() => {
+    pluginInputRef.current?.click();
+  }, []);
+
+  const onInputPluginFile = useCallback((fileList: FileList | null) => {
+    const file = fileList?.[0];
+    if (!file) {
+      return;
+    }
+    void importExternalPlugin(file);
+  }, [importExternalPlugin]);
+
   const toggleAboutWindow = useCallback(() => {
     setAboutOpen((value) => !value);
   }, []);
@@ -644,7 +888,7 @@ function App() {
 
       <img className="desktop-ghost" src={mascotPixelbot} alt="" />
 
-      <main className="window main-shell" aria-label={BRAND.appName}>
+      <main className="window main-shell" aria-label={BRAND.appName} style={mainShellStyle}>
         <header className="main-title">
           <span className="main-title__text">{`${BRAND.appName} ${BRAND.versionLabel}`}</span>
           <WindowControls />
@@ -672,6 +916,36 @@ function App() {
               {t("modeAdvanced")}
             </button>
           </div>
+          <div className="theme-switch" role="group" aria-label={t("themeTitle")}>
+            <span className="mode-switch__label">{t("themeTitle")}</span>
+            <button
+              type="button"
+              className={`retro-btn btn-mini ${themeMode === "light" ? "is-active" : ""}`}
+              onClick={() => setThemeMode("light")}
+            >
+              {t("themeLight")}
+            </button>
+            <button
+              type="button"
+              className={`retro-btn btn-mini ${themeMode === "dark" ? "is-active" : ""}`}
+              onClick={() => setThemeMode("dark")}
+            >
+              {t("themeDark")}
+            </button>
+          </div>
+          {isAdvancedMode ? (
+            <label className="layout-switch" aria-label={t("layoutTitle")}>
+              <span className="mode-switch__label">{`${t("layoutPanelWidth")} ${leftPanelWidth}px`}</span>
+              <input
+                type="range"
+                min={200}
+                max={360}
+                step={2}
+                value={leftPanelWidth}
+                onChange={(event) => setLeftPanelWidth(Number(event.target.value))}
+              />
+            </label>
+          ) : null}
         </div>
 
         <section className="main-body">
@@ -719,6 +993,24 @@ function App() {
                     />
                     <span>{t("performanceMode")}</span>
                   </label>
+                ) : null}
+
+                {isAdvancedMode ? (
+                  <>
+                    <div className="group-label">{t("pixelizeAlgorithm")}</div>
+                    <div className="tiny-grid">
+                      {lists.pixelizeAlgorithms.map((algorithm) => (
+                        <button
+                          key={algorithm}
+                          type="button"
+                          className={`retro-btn btn-mini ${pixelizeAlgorithm === algorithm ? "is-active" : ""}`}
+                          onClick={() => setPixelizeAlgorithm(algorithm)}
+                        >
+                          {t(`pixelizeAlgorithm_${algorithm}`)}
+                        </button>
+                      ))}
+                    </div>
+                  </>
                 ) : null}
 
                 {isAdvancedMode ? (
@@ -864,6 +1156,102 @@ function App() {
                           max={300}
                           value={effectTuning.waveSpeed}
                           onChange={(event) => patchEffectTuning({ waveSpeed: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.scanlines ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_scanlines")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.scanlinePower}%</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={220}
+                          value={effectTuning.scanlinePower}
+                          onChange={(event) => patchEffectTuning({ scanlinePower: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.chromaShift ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_chromaShift")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.chromaPower}%</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={220}
+                          value={effectTuning.chromaPower}
+                          onChange={(event) => patchEffectTuning({ chromaPower: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.pixelSort ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_pixelSort")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.pixelSortPower}%</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={220}
+                          value={effectTuning.pixelSortPower}
+                          onChange={(event) => patchEffectTuning({ pixelSortPower: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.noise ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_noise")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.noisePower}%</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={220}
+                          value={effectTuning.noisePower}
+                          onChange={(event) => patchEffectTuning({ noisePower: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.vignette ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_vignette")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.vignettePower}%</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={220}
+                          value={effectTuning.vignettePower}
+                          onChange={(event) => patchEffectTuning({ vignettePower: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.outline ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_outline")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.outlinePower}%</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={220}
+                          value={effectTuning.outlinePower}
+                          onChange={(event) => patchEffectTuning({ outlinePower: Number(event.target.value) })}
                         />
                       </label>
                     </div>
@@ -1342,6 +1730,89 @@ function App() {
             {isAdvancedMode ? (
               <section className="tool-window">
               <header>
+                <span>{t("shortcutTitle")}</span>
+                <WindowControls />
+              </header>
+              <div className="tool-content">
+                <div className="shortcut-list">
+                  {shortcutBindings.map((binding) => (
+                    <div key={binding.id} className="shortcut-item">
+                      <kbd>{binding.combo}</kbd>
+                      <span>{t(binding.labelKey)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              </section>
+            ) : null}
+
+            {isAdvancedMode ? (
+              <section className="tool-window">
+              <header>
+                <span>{t("pluginTitle")}</span>
+                <WindowControls />
+              </header>
+              <div className="tool-content">
+                <label className="dialog-toggle perf-toggle">
+                  <input
+                    type="checkbox"
+                    checked={webglAcceleration && webglSupported}
+                    disabled={!webglSupported}
+                    onChange={(event) => setWebglAcceleration(event.target.checked)}
+                  />
+                  <span>
+                    {t("webglAcceleration")}
+                    {!webglSupported ? ` (${t("webglUnsupported")})` : ""}
+                  </span>
+                </label>
+                <div className="preset-actions">
+                  <button type="button" className="retro-btn btn-mini" onClick={onOpenPluginImport}>
+                    {t("pluginImport")}
+                  </button>
+                </div>
+                <div className="preset-list">
+                  {externalPlugins.length > 0 ? (
+                    externalPlugins.map((plugin) => (
+                      <div key={plugin.id} className="preset-item plugin-item">
+                        <label className="dialog-toggle plugin-item__toggle">
+                          <input
+                            type="checkbox"
+                            checked={plugin.enabled}
+                            onChange={(event) => setExternalPluginEnabled(plugin.id, event.target.checked)}
+                          />
+                          <span>{plugin.name}</span>
+                        </label>
+                        <small>{plugin.id}</small>
+                        <label className="plugin-item__strength">
+                          <span>{t("pluginStrength")} {plugin.strength}%</span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={200}
+                            value={plugin.strength}
+                            onChange={(event) => setExternalPluginStrength(plugin.id, Number(event.target.value))}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="retro-btn btn-mini"
+                          onClick={() => unregisterExternalPlugin(plugin.id)}
+                        >
+                          {t("pluginRemove")}
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="preset-empty">{t("pluginEmpty")}</div>
+                  )}
+                </div>
+              </div>
+              </section>
+            ) : null}
+
+            {isAdvancedMode ? (
+              <section className="tool-window">
+              <header>
                 <span>{t("fxPipelineTitle")}</span>
                 <WindowControls />
               </header>
@@ -1433,6 +1904,12 @@ function App() {
               </header>
               <div className="tool-content">
                 <div className="history-actions">
+                  <button type="button" className="retro-btn btn-mini" onClick={undoParamHistory} disabled={!canUndoParamHistory}>
+                    {t("historyUndo")}
+                  </button>
+                  <button type="button" className="retro-btn btn-mini" onClick={redoParamHistory} disabled={!canRedoParamHistory}>
+                    {t("historyRedo")}
+                  </button>
                   <button type="button" className="retro-btn btn-mini" onClick={clearParamHistory} disabled={paramHistory.length === 0}>
                     {t("historyClear")}
                   </button>
@@ -1443,7 +1920,7 @@ function App() {
                       <button
                         key={entry.id}
                         type="button"
-                        className="history-item"
+                        className={`history-item ${activeParamHistoryId === entry.id ? "is-active" : ""}`}
                         onClick={() => restoreParamHistory(entry.id)}
                       >
                         <span>{entry.label}</span>
@@ -1631,6 +2108,16 @@ function App() {
                       event.currentTarget.value = "";
                     }}
                   />
+                  <input
+                    ref={pluginInputRef}
+                    type="file"
+                    accept=".js,.mjs,text/javascript,application/javascript"
+                    hidden
+                    onChange={(event) => {
+                      onInputPluginFile(event.target.files);
+                      event.currentTarget.value = "";
+                    }}
+                  />
                   <canvas ref={canvasRef} className={`preview-canvas ${grid ? "is-visible" : ""}`} />
                   <canvas
                     ref={maskCanvasRef}
@@ -1701,6 +2188,16 @@ function App() {
                       >
                         {t("downloadApng")}
                       </button>
+                      <button
+                        type="button"
+                        className="retro-btn btn-mini"
+                        onClick={() => {
+                          void onDownloadSpriteSheet();
+                        }}
+                        disabled={!grid || isRecording || isBatchProcessing}
+                      >
+                        {t("downloadSprite")}
+                      </button>
                       {canRecordVideo ? (
                         <button
                           type="button"
@@ -1747,6 +2244,16 @@ function App() {
                           max={99}
                           value={exportLoopCount}
                           onChange={(event) => setExportLoopCount(Number(event.target.value) || 0)}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("spriteColumns")} {spriteColumns}</span>
+                        <input
+                          type="range"
+                          min={1}
+                          max={12}
+                          value={spriteColumns}
+                          onChange={(event) => setSpriteColumns(Number(event.target.value))}
                         />
                       </label>
                     </div>

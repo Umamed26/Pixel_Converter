@@ -1,5 +1,6 @@
 /* 主主题样式：桌面、窗口、任务栏、弹窗与响应式布局。/ Main theme styles for desktop, windows, taskbar, dialogs, and responsive layout. */
 :root {
+  --desktop-sky-highlight: #d7ecff;
   --desktop-sky-top: #a9d1ff;
   --desktop-sky-mid: #6eaef5;
   --desktop-sky-bottom: #4a8fe7;
@@ -36,7 +37,7 @@ body {
   background:
     radial-gradient(110% 60% at 50% 118%, var(--desktop-hill) 0%, var(--desktop-hill) 47%, transparent 48%),
     radial-gradient(90% 50% at 20% 110%, #76c85a 0%, #76c85a 40%, transparent 41%),
-    linear-gradient(180deg, #d7ecff 0%, var(--desktop-sky-top) 18%, var(--desktop-sky-mid) 62%, var(--desktop-sky-bottom) 100%);
+    linear-gradient(180deg, var(--desktop-sky-highlight) 0%, var(--desktop-sky-top) 18%, var(--desktop-sky-mid) 62%, var(--desktop-sky-bottom) 100%);
   overflow-x: hidden;
 }
 
@@ -182,6 +183,22 @@ body {
   gap: 4px;
 }
 
+.theme-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.layout-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.layout-switch input[type="range"] {
+  width: 94px;
+}
+
 .mode-switch__label {
   font-size: 10px;
   color: #2c4d7d;
@@ -194,7 +211,7 @@ body {
 
 .main-body {
   display: grid;
-  grid-template-columns: 238px 1fr;
+  grid-template-columns: var(--left-panel-width, 238px) 1fr;
   gap: 10px;
   padding: 8px;
 }
@@ -678,6 +695,7 @@ select {
 .history-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 4px;
   margin-bottom: 4px;
 }
 
@@ -696,6 +714,62 @@ select {
 .history-item small {
   font-size: 9px;
   color: #566077;
+}
+
+.history-item.is-active {
+  border-color: #2a5da8;
+  background: linear-gradient(180deg, #4b93f2 0%, #1c62cb 100%);
+  color: #fff;
+}
+
+.history-item.is-active small {
+  color: #d5e6ff;
+}
+
+.shortcut-list {
+  display: grid;
+  gap: 4px;
+}
+
+.shortcut-item {
+  border: 1px solid #9aa0a8;
+  background: #ece7d8;
+  padding: 4px 6px;
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+}
+
+.shortcut-item kbd {
+  border: 1px solid #818793;
+  border-top-color: #fff;
+  border-left-color: #fff;
+  background: #f7f6f2;
+  padding: 1px 4px;
+  font-family: "Courier New", monospace;
+  font-size: 9px;
+}
+
+.plugin-item {
+  gap: 4px;
+}
+
+.plugin-item__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plugin-item__strength {
+  display: grid;
+  gap: 2px;
+  font-size: 9px;
+}
+
+.plugin-item__strength input[type="range"] {
+  width: 100%;
 }
 
 .gallery-window {
@@ -1117,7 +1191,7 @@ input[type="range"]::-moz-range-thumb {
 
 .export-settings-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
 }
 
@@ -1344,6 +1418,67 @@ input[type="range"]::-moz-range-thumb {
   line-height: 1.6;
 }
 
+:root[data-theme="dark"] {
+  --desktop-sky-highlight: #11253f;
+  --desktop-sky-top: #183456;
+  --desktop-sky-mid: #152f4e;
+  --desktop-sky-bottom: #10233d;
+  --desktop-hill: #2c5a36;
+  --desktop-hill-dark: #224a2e;
+  --win-bg: #2d3748;
+  --surface-bg: #263246;
+  --text-primary: #e6edf8;
+}
+
+body.theme-dark .main-menu,
+body.theme-dark .tool-content,
+body.theme-dark .inner-status,
+body.theme-dark .editor-toolbar,
+body.theme-dark .editor-palette,
+body.theme-dark .editor-footer {
+  background: linear-gradient(180deg, #36435a 0%, #29354a 100%);
+  color: #e6edf8;
+}
+
+body.theme-dark .window,
+body.theme-dark .about-dialog,
+body.theme-dark .ghost-window {
+  box-shadow:
+    0 0 0 1px #50637e,
+    0 12px 28px rgb(0 8 20 / 45%),
+    inset 1px 1px 0 #47546c,
+    inset -1px -1px 0 #1e2738;
+}
+
+body.theme-dark .group-label,
+body.theme-dark .fx-tuning-title,
+body.theme-dark .mode-switch__label,
+body.theme-dark .gallery-nav-status {
+  color: #bfd6ff;
+}
+
+body.theme-dark .dialog-settings input,
+body.theme-dark .dialog-settings textarea,
+body.theme-dark .preset-controls input[type="text"],
+body.theme-dark .batch-template input,
+body.theme-dark input[type="text"],
+body.theme-dark input[type="number"],
+body.theme-dark textarea,
+body.theme-dark select {
+  background: #1e2738;
+  color: #e6edf8;
+  border-color: #5f7596;
+}
+
+body.theme-dark .about-dialog > article,
+body.theme-dark .gallery-region,
+body.theme-dark .gallery-preview,
+body.theme-dark .gallery-list-item,
+body.theme-dark .compare-box {
+  background: #263246;
+  color: #e6edf8;
+}
+
 .about-dialog > footer {
   padding: 0 8px 8px;
   text-align: center;
@@ -1460,6 +1595,19 @@ input[type="range"]::-moz-range-thumb {
 .editor-zoom {
   margin-left: auto;
   font-size: 11px;
+}
+
+.editor-symmetry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.editor-symmetry select {
+  min-width: 96px;
+  height: 22px;
+  padding: 0 4px;
 }
 
 .editor-canvas-wrap {

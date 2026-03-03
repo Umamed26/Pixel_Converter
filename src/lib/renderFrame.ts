@@ -165,6 +165,37 @@ const DIALOG_THEME_CONFIG: Record<DialogState["style"], DialogThemeConfig> = {
 const EFFECT_TICK_MS = 120;
 const GRID_TILE_SIZE = 64;
 const TILE_RENDER_THRESHOLD = 24_000;
+const WEBGL_VERTEX_SHADER = `
+attribute vec2 a_pos;
+varying vec2 v_uv;
+void main() {
+  v_uv = (a_pos + 1.0) * 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+`;
+const WEBGL_FRAGMENT_SHADER = `
+precision mediump float;
+varying vec2 v_uv;
+uniform sampler2D u_tex;
+void main() {
+  gl_FragColor = texture2D(u_tex, vec2(v_uv.x, 1.0 - v_uv.y));
+}
+`;
+
+interface WebGLGridResources {
+  canvas: HTMLCanvasElement;
+  gl: WebGLRenderingContext;
+  program: WebGLProgram;
+  positionBuffer: WebGLBuffer;
+  texture: WebGLTexture;
+  positionLocation: number;
+  textureLocation: WebGLUniformLocation;
+  pixelData: Uint8Array;
+  pixelDataWidth: number;
+  pixelDataHeight: number;
+}
+
+const WEBGL_GRID_CACHE = new WeakMap<HTMLCanvasElement, WebGLGridResources>();
 
 /**
  * 限制数值到区间。/ Clamp number into range.
@@ -230,14 +261,239 @@ function createSeededRandom(seed: number): () => number {
 }
 
 /**
+ * 编译 WebGL 着色器。/ Compile a WebGL shader.
+ * @param gl WebGL 上下文 / WebGL context.
+ * @param type 着色器类型 / Shader type.
+ * @param source GLSL 源码 / GLSL source.
+ * @returns 着色器对象；失败返回 null / Shader object or null.
+ */
+function compileShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader | null {
+  const shader = gl.createShader(type);
+  if (!shader) {
+    return null;
+  }
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+
+/**
+ * 创建 WebGL Program。/ Create a WebGL program.
+ * @param gl WebGL 上下文 / WebGL context.
+ * @returns Program 对象；失败返回 null / Program object or null.
+ */
+function createProgram(gl: WebGLRenderingContext): WebGLProgram | null {
+  const vertex = compileShader(gl, gl.VERTEX_SHADER, WEBGL_VERTEX_SHADER);
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, WEBGL_FRAGMENT_SHADER);
+  if (!vertex || !fragment) {
+    if (vertex) {
+      gl.deleteShader(vertex);
+    }
+    if (fragment) {
+      gl.deleteShader(fragment);
+    }
+    return null;
+  }
+  const program = gl.createProgram();
+  if (!program) {
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
+    return null;
+  }
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  gl.deleteShader(vertex);
+  gl.deleteShader(fragment);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    gl.deleteProgram(program);
+    return null;
+  }
+  return program;
+}
+
+/**
+ * 构建并缓存 WebGL 网格渲染资源。/ Build and cache WebGL grid rendering resources.
+ * @param targetCanvas 主渲染画布 / Main render canvas.
+ * @returns WebGL 资源；不可用时返回 null / WebGL resources or null.
+ */
+function getWebGLGridResources(targetCanvas: HTMLCanvasElement): WebGLGridResources | null {
+  const cached = WEBGL_GRID_CACHE.get(targetCanvas);
+  if (cached) {
+    return cached;
+  }
+  const offscreen = document.createElement("canvas");
+  const gl = offscreen.getContext("webgl", {
+    alpha: true,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    preserveDrawingBuffer: false,
+  });
+  if (!gl) {
+    return null;
+  }
+  const program = createProgram(gl);
+  if (!program) {
+    return null;
+  }
+
+  const positionLocation = gl.getAttribLocation(program, "a_pos");
+  const textureLocation = gl.getUniformLocation(program, "u_tex");
+  if (positionLocation < 0 || !textureLocation) {
+    gl.deleteProgram(program);
+    return null;
+  }
+
+  const positionBuffer = gl.createBuffer();
+  const texture = gl.createTexture();
+  if (!positionBuffer || !texture) {
+    if (positionBuffer) {
+      gl.deleteBuffer(positionBuffer);
+    }
+    if (texture) {
+      gl.deleteTexture(texture);
+    }
+    gl.deleteProgram(program);
+    return null;
+  }
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferData(
+    gl.ARRAY_BUFFER,
+    new Float32Array([
+      -1, -1,
+      1, -1,
+      -1, 1,
+      1, 1,
+    ]),
+    gl.STATIC_DRAW,
+  );
+
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  const resources: WebGLGridResources = {
+    canvas: offscreen,
+    gl,
+    program,
+    positionBuffer,
+    texture,
+    positionLocation,
+    textureLocation,
+    pixelData: new Uint8Array(0),
+    pixelDataWidth: 0,
+    pixelDataHeight: 0,
+  };
+  WEBGL_GRID_CACHE.set(targetCanvas, resources);
+  return resources;
+}
+
+/**
+ * 将索引网格转换为 RGBA 像素缓冲。/ Convert index grid into RGBA pixel buffer.
+ * @param resources WebGL 资源缓存 / WebGL resource cache.
+ * @param grid 像素网格 / Pixel grid.
+ * @returns RGBA 像素缓冲 / RGBA pixel buffer.
+ */
+function gridToRgbaPixels(resources: WebGLGridResources, grid: PixelGrid): Uint8Array {
+  const total = grid.width * grid.height;
+  if (
+    resources.pixelData.length !== total * 4
+    || resources.pixelDataWidth !== grid.width
+    || resources.pixelDataHeight !== grid.height
+  ) {
+    resources.pixelData = new Uint8Array(total * 4);
+    resources.pixelDataWidth = grid.width;
+    resources.pixelDataHeight = grid.height;
+  }
+  const { pixelData } = resources;
+  for (let i = 0; i < total; i += 1) {
+    const colorIndex = grid.indices[i];
+    const color = grid.colors[colorIndex] ?? [0, 0, 0];
+    const offset = i * 4;
+    pixelData[offset] = color[0];
+    pixelData[offset + 1] = color[1];
+    pixelData[offset + 2] = color[2];
+    pixelData[offset + 3] = 255;
+  }
+  return pixelData;
+}
+
+/**
+ * 使用 WebGL 渲染基础像素网格。/ Render base pixel grid with WebGL.
+ * @param targetCanvas 主渲染画布 / Main render canvas.
+ * @param ctx 主画布 2D 上下文 / Main canvas 2D context.
+ * @param grid 像素网格 / Pixel grid.
+ * @returns 是否渲染成功 / Whether rendering succeeded.
+ */
+function drawGridWithWebGL(
+  targetCanvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  grid: PixelGrid,
+): boolean {
+  const resources = getWebGLGridResources(targetCanvas);
+  if (!resources) {
+    return false;
+  }
+  const { canvas, gl, program, texture, positionBuffer, positionLocation, textureLocation } = resources;
+  canvas.width = targetCanvas.width;
+  canvas.height = targetCanvas.height;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  const pixels = gridToRgbaPixels(resources, grid);
+  gl.useProgram(program);
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.enableVertexAttribArray(positionLocation);
+  gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA,
+    grid.width,
+    grid.height,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    pixels,
+  );
+  gl.uniform1i(textureLocation, 0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  ctx.drawImage(canvas, 0, 0, targetCanvas.width, targetCanvas.height);
+  return true;
+}
+
+/**
  * 将网格索引绘制到画布。/ Draw indexed pixel grid to canvas.
+ * @param canvas 目标画布 / Target canvas.
  * @param ctx 2D 绘图上下文 / 2D rendering context.
  * @param grid 像素网格 / Pixel grid.
+ * @param useWebGL 是否启用 WebGL 加速底图渲染 / Whether to use WebGL accelerated base-grid rendering.
  * @returns 无返回值 / No return value.
  */
-function drawGrid(ctx: CanvasRenderingContext2D, grid: PixelGrid): void {
+function drawGrid(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  grid: PixelGrid,
+  useWebGL: boolean,
+): void {
   const { width, height, pixelSize, indices, colors } = grid;
   if (!colors.length) {
+    return;
+  }
+  if (useWebGL && drawGridWithWebGL(canvas, ctx, grid)) {
     return;
   }
   const cellCount = width * height;
@@ -680,6 +936,280 @@ function applyWaveWarp(
       data[targetIdx + 1] = source[sourceIdx + 1];
       data[targetIdx + 2] = source[sourceIdx + 2];
       data[targetIdx + 3] = source[sourceIdx + 3];
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/**
+ * 扫描线效果（独立于 CRT）。/ Apply standalone scanline shading.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param baseTick 基础 tick / Base tick.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
+function applyScanlines(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  baseTick: number,
+  tuning: EffectTuning,
+): void {
+  const strength = toStrength(tuning.scanlinePower);
+  if (strength <= 0) {
+    return;
+  }
+
+  const tick = baseTick;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  for (let y = 0; y < height; y += 1) {
+    const wave = Math.sin((y + tick * 0.35) * 0.14) * 0.08 * strength;
+    const rowDim = (y % 2 === 0 ? 0.12 : 0.33) * strength;
+    const brightness = clamp(1 - rowDim + wave, 0.2, 1);
+    for (let x = 0; x < width; x += 1) {
+      const idx = (y * width + x) * 4;
+      data[idx] = Math.round(data[idx] * brightness);
+      data[idx + 1] = Math.round(data[idx + 1] * brightness);
+      data[idx + 2] = Math.round(data[idx + 2] * brightness);
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/**
+ * 暗角效果。/ Apply vignette darkening.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
+function applyVignette(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  tuning: EffectTuning,
+): void {
+  const strength = toStrength(tuning.vignettePower);
+  if (strength <= 0) {
+    return;
+  }
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const cx = width * 0.5;
+  const cy = height * 0.5;
+  const maxDist = Math.hypot(cx, cy) || 1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = (y * width + x) * 4;
+      const dx = x - cx;
+      const dy = y - cy;
+      const distRatio = Math.hypot(dx, dy) / maxDist;
+      const edgeDark = Math.pow(distRatio, 1.8) * 0.72 * strength;
+      const brightness = clamp(1 - edgeDark, 0.12, 1);
+      data[idx] = Math.round(data[idx] * brightness);
+      data[idx + 1] = Math.round(data[idx + 1] * brightness);
+      data[idx + 2] = Math.round(data[idx + 2] * brightness);
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/**
+ * 色差（RGB 通道偏移）效果。/ Apply chromatic aberration channel offset.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param baseTick 基础 tick / Base tick.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
+function applyChromaShift(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  baseTick: number,
+  tuning: EffectTuning,
+): void {
+  const strength = toStrength(tuning.chromaPower);
+  if (strength <= 0) {
+    return;
+  }
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const source = new Uint8ClampedArray(data);
+  const shift = Math.max(1, Math.round(2.5 * strength));
+  const yShift = Math.round(Math.sin(baseTick * 0.2) * shift);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = (y * width + x) * 4;
+      const rx = clamp(x - shift, 0, width - 1);
+      const gx = clamp(x, 0, width - 1);
+      const bx = clamp(x + shift, 0, width - 1);
+      const ry = clamp(y - yShift, 0, height - 1);
+      const by = clamp(y + yShift, 0, height - 1);
+      data[idx] = source[(ry * width + rx) * 4];
+      data[idx + 1] = source[(y * width + gx) * 4 + 1];
+      data[idx + 2] = source[(by * width + bx) * 4 + 2];
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function luma(r: number, g: number, b: number): number {
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/**
+ * 像素排序效果（按亮度对局部段排序）。/ Apply local pixel-sorting by luminance.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param baseTick 基础 tick / Base tick.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
+function applyPixelSort(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  baseTick: number,
+  tuning: EffectTuning,
+): void {
+  const strength = toStrength(tuning.pixelSortPower);
+  if (strength <= 0) {
+    return;
+  }
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const source = new Uint8ClampedArray(data);
+  const blockSize = clamp(Math.round(6 + (1 - strength) * 18), 4, 28);
+  const threshold = 95 + strength * 90;
+  const reverse = baseTick % 2 === 1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let startX = 0; startX < width; startX += blockSize) {
+      const endX = Math.min(width, startX + blockSize);
+      let hasHighlight = false;
+      for (let x = startX; x < endX; x += 1) {
+        const idx = (y * width + x) * 4;
+        if (luma(source[idx], source[idx + 1], source[idx + 2]) >= threshold) {
+          hasHighlight = true;
+          break;
+        }
+      }
+      if (!hasHighlight) {
+        continue;
+      }
+
+      const segment: Array<{ r: number; g: number; b: number; a: number; y: number }> = [];
+      for (let x = startX; x < endX; x += 1) {
+        const idx = (y * width + x) * 4;
+        segment.push({
+          r: source[idx],
+          g: source[idx + 1],
+          b: source[idx + 2],
+          a: source[idx + 3],
+          y: luma(source[idx], source[idx + 1], source[idx + 2]),
+        });
+      }
+
+      segment.sort((a, b) => (reverse ? b.y - a.y : a.y - b.y));
+      for (let x = startX; x < endX; x += 1) {
+        const pixel = segment[x - startX];
+        const idx = (y * width + x) * 4;
+        data[idx] = pixel.r;
+        data[idx + 1] = pixel.g;
+        data[idx + 2] = pixel.b;
+        data[idx + 3] = pixel.a;
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/**
+ * 噪点颗粒效果。/ Apply film-like noise grain.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param baseTick 基础 tick / Base tick.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
+function applyNoise(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  baseTick: number,
+  tuning: EffectTuning,
+): void {
+  const strength = toStrength(tuning.noisePower);
+  if (strength <= 0) {
+    return;
+  }
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const random = createSeededRandom((baseTick + 1) * 2654435761 + width * 17 + height * 31);
+  const amount = Math.max(1, Math.round(18 * strength));
+  for (let i = 0; i < data.length; i += 4) {
+    const grain = Math.round((random() - 0.5) * 2 * amount);
+    data[i] = clamp(data[i] + grain, 0, 255);
+    data[i + 1] = clamp(data[i + 1] + grain, 0, 255);
+    data[i + 2] = clamp(data[i + 2] + grain, 0, 255);
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/**
+ * 轮廓描边效果（按亮度梯度）。/ Apply edge outline by luminance gradient.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
+function applyOutline(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  tuning: EffectTuning,
+): void {
+  const strength = toStrength(tuning.outlinePower);
+  if (strength <= 0) {
+    return;
+  }
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const source = new Uint8ClampedArray(data);
+  const threshold = 12 + (1 - strength) * 42;
+  const blend = clamp(0.25 + strength * 0.55, 0.1, 0.9);
+
+  for (let y = 0; y < height - 1; y += 1) {
+    for (let x = 0; x < width - 1; x += 1) {
+      const idx = (y * width + x) * 4;
+      const rightIdx = (y * width + x + 1) * 4;
+      const downIdx = ((y + 1) * width + x) * 4;
+      const current = luma(source[idx], source[idx + 1], source[idx + 2]);
+      const right = luma(source[rightIdx], source[rightIdx + 1], source[rightIdx + 2]);
+      const down = luma(source[downIdx], source[downIdx + 1], source[downIdx + 2]);
+      const edge = Math.abs(current - right) + Math.abs(current - down);
+      if (edge < threshold) {
+        continue;
+      }
+      data[idx] = Math.round(data[idx] * (1 - blend));
+      data[idx + 1] = Math.round(data[idx + 1] * (1 - blend));
+      data[idx + 2] = Math.round(data[idx + 2] * (1 - blend));
     }
   }
 
@@ -1189,6 +1719,12 @@ export const DEFAULT_EFFECT_PLUGINS: EffectPlugin[] = [
     },
   },
   {
+    key: "scanlines",
+    apply: (ctx, canvas, _grid, tuning, effectTick) => {
+      applyScanlines(ctx, canvas.width, canvas.height, effectTick, tuning);
+    },
+  },
+  {
     key: "paletteCycle",
     apply: (ctx, canvas, grid, tuning, effectTick) => {
       applyPaletteCycle(ctx, canvas.width, canvas.height, grid.colors, effectTick, tuning);
@@ -1213,6 +1749,36 @@ export const DEFAULT_EFFECT_PLUGINS: EffectPlugin[] = [
     },
   },
   {
+    key: "chromaShift",
+    apply: (ctx, canvas, _grid, tuning, effectTick) => {
+      applyChromaShift(ctx, canvas.width, canvas.height, effectTick, tuning);
+    },
+  },
+  {
+    key: "pixelSort",
+    apply: (ctx, canvas, _grid, tuning, effectTick) => {
+      applyPixelSort(ctx, canvas.width, canvas.height, effectTick, tuning);
+    },
+  },
+  {
+    key: "noise",
+    apply: (ctx, canvas, _grid, tuning, effectTick) => {
+      applyNoise(ctx, canvas.width, canvas.height, effectTick, tuning);
+    },
+  },
+  {
+    key: "vignette",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyVignette(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "outline",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyOutline(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
     key: "glitch",
     apply: (ctx, canvas, grid, tuning, effectTick) => {
       applyGlitch(ctx, canvas.width, canvas.height, grid.pixelSize, effectTick, tuning);
@@ -1231,6 +1797,7 @@ export const DEFAULT_EFFECT_PLUGINS: EffectPlugin[] = [
  * @param revealCount 当前可见字符数 / Visible character count.
  * @param _ghostImage 保留参数（兼容接口）/ Reserved parameter for interface compatibility.
  * @param timeMs 当前时间戳（毫秒）/ Current time in milliseconds.
+ * @param useWebGL 是否启用 WebGL 底图加速 / Whether to enable WebGL for base grid acceleration.
  * @returns 无返回值 / No return value.
  */
 export function renderFrame(
@@ -1244,6 +1811,7 @@ export function renderFrame(
   _ghostImage: HTMLImageElement,
   timeMs: number,
   plugins: EffectPlugin[] = DEFAULT_EFFECT_PLUGINS,
+  useWebGL = false,
 ): void {
   canvas.width = grid.width * grid.pixelSize;
   canvas.height = grid.height * grid.pixelSize;
@@ -1253,7 +1821,7 @@ export function renderFrame(
   }
   ctx.imageSmoothingEnabled = false;
 
-  drawGrid(ctx, grid);
+  drawGrid(canvas, ctx, grid, useWebGL);
   const effectTick = Math.floor(timeMs / EFFECT_TICK_MS);
   for (const plugin of plugins) {
     if (!effects[plugin.key]) {

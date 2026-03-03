@@ -56,6 +56,7 @@ import type {
   MaskMode,
   MaskState,
   PaletteColor,
+  PixelizeAlgorithm,
   ProjectFileV1,
   PixelGrid,
   PixelGridSnapshot,
@@ -94,6 +95,7 @@ type GalleryMetaMap = Record<string, GalleryMeta>;
 
 interface ParamHistorySnapshot {
   pixelSize: number;
+  pixelizeAlgorithm: PixelizeAlgorithm;
   palette: PaletteId;
   paletteOverrides: Partial<Record<PaletteId, PaletteColor[]>>;
   effects: EffectsState;
@@ -126,6 +128,7 @@ interface PixelWorkerRequest {
   mimeType: string;
   pixelSize: number;
   palette: PaletteColor[];
+  algorithm: PixelizeAlgorithm;
 }
 
 interface PixelWorkerSuccess {
@@ -144,6 +147,54 @@ interface PixelWorkerFailure {
   error: string;
 }
 
+interface ExternalPluginApplyContext {
+  timeMs: number;
+  strength: number;
+  grid: PixelGrid;
+  effects: EffectsState;
+  effectTuning: EffectTuning;
+}
+
+interface ExternalPluginDefinition {
+  id: string;
+  name: string;
+  version?: string;
+  author?: string;
+  description?: string;
+  defaultEnabled?: boolean;
+  defaultStrength?: number;
+  requiresContinuousRender?: boolean;
+  apply: (
+    ctx: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
+    context: ExternalPluginApplyContext,
+  ) => void;
+}
+
+interface ExternalPluginRuntime extends Omit<ExternalPluginDefinition, "defaultEnabled" | "defaultStrength"> {
+  enabled: boolean;
+  strength: number;
+}
+
+interface PluginHostPublicApi {
+  version: string;
+  registerPlugin: (plugin: ExternalPluginDefinition) => boolean;
+  unregisterPlugin: (pluginId: string) => boolean;
+  listPlugins: () => Array<{
+    id: string;
+    name: string;
+    enabled: boolean;
+    strength: number;
+    version?: string;
+    author?: string;
+    description?: string;
+  }>;
+}
+
+type WindowWithPluginHost = Window & {
+  PixelWorkshop?: PluginHostPublicApi;
+};
+
 const PIXEL_WORKER_TIMEOUT_MS = 15_000;
 const BATCH_RETRY_LIMIT = 3;
 const BATCH_WORKER_CONCURRENCY = 2;
@@ -151,9 +202,13 @@ const HISTORY_LIMIT = 64;
 const FX_PIPELINE_PRESET_LIMIT = 12;
 const FX_PIPELINE_PRESET_KEY = "pixel_workshop_fx_pipeline_v1";
 const GALLERY_META_KEY = "pixel_workshop_gallery_meta_v1";
+const PARAM_HISTORY_STORAGE_KEY = "pixel_workshop_param_history_v1";
+const WEBGL_ACCEL_STORAGE_KEY = "pixel_workshop_webgl_accel_v1";
 const GIF_DEFAULT_FPS = 10;
 const APNG_DEFAULT_FPS = 12;
+const SPRITE_COLUMNS_DEFAULT = 6;
 const EXPORT_FRAME_CAP = 48;
+const PIXELIZE_ALGORITHMS: PixelizeAlgorithm[] = ["standard", "edgeAware"];
 
 /**
  * 将网格索引序列压缩为 base36 字符串。/ Encode grid indices as compact base36 string.
@@ -340,10 +395,16 @@ function defaultEffects(): EffectsState {
   return {
     glitch: false,
     crt: false,
+    scanlines: false,
     paletteCycle: false,
     ghost: false,
     ditherFade: false,
     waveWarp: false,
+    chromaShift: false,
+    pixelSort: false,
+    noise: false,
+    vignette: false,
+    outline: false,
   };
 }
 
@@ -374,6 +435,7 @@ function defaultEffectTuning(): EffectTuning {
     glitchPower: 100,
     glitchSpeed: 100,
     crtPower: 100,
+    scanlinePower: 100,
     paletteCycleSpeed: 100,
     paletteCycleStep: 1,
     ghostPower: 100,
@@ -382,6 +444,11 @@ function defaultEffectTuning(): EffectTuning {
     ditherSpeed: 100,
     wavePower: 100,
     waveSpeed: 100,
+    chromaPower: 100,
+    pixelSortPower: 100,
+    noisePower: 100,
+    vignettePower: 100,
+    outlinePower: 100,
   };
 }
 
@@ -435,6 +502,7 @@ function interpolateEffectTuning(from: EffectTuning, to: EffectTuning, progress:
     glitchPower: lerp(from.glitchPower, to.glitchPower, t),
     glitchSpeed: lerp(from.glitchSpeed, to.glitchSpeed, t),
     crtPower: lerp(from.crtPower, to.crtPower, t),
+    scanlinePower: lerp(from.scanlinePower, to.scanlinePower, t),
     paletteCycleSpeed: lerp(from.paletteCycleSpeed, to.paletteCycleSpeed, t),
     paletteCycleStep: Math.round(lerp(from.paletteCycleStep, to.paletteCycleStep, t)),
     ghostPower: lerp(from.ghostPower, to.ghostPower, t),
@@ -443,6 +511,11 @@ function interpolateEffectTuning(from: EffectTuning, to: EffectTuning, progress:
     ditherSpeed: lerp(from.ditherSpeed, to.ditherSpeed, t),
     wavePower: lerp(from.wavePower, to.wavePower, t),
     waveSpeed: lerp(from.waveSpeed, to.waveSpeed, t),
+    chromaPower: lerp(from.chromaPower, to.chromaPower, t),
+    pixelSortPower: lerp(from.pixelSortPower, to.pixelSortPower, t),
+    noisePower: lerp(from.noisePower, to.noisePower, t),
+    vignettePower: lerp(from.vignettePower, to.vignettePower, t),
+    outlinePower: lerp(from.outlinePower, to.outlinePower, t),
   };
 }
 
@@ -549,6 +622,15 @@ function normalizePaletteId(raw: unknown): PaletteId | null {
   }
   const mapped = raw === "sora" ? "studio" : raw;
   return mapped in PALETTES ? (mapped as PaletteId) : null;
+}
+
+/**
+ * 规范化像素化算法值。/ Normalize pixelization algorithm value.
+ * @param raw 原始值 / Raw value.
+ * @returns 合法算法；非法回落 standard / Valid algorithm with `standard` fallback.
+ */
+function normalizePixelizeAlgorithm(raw: unknown): PixelizeAlgorithm {
+  return raw === "edgeAware" ? "edgeAware" : "standard";
 }
 
 /**
@@ -713,6 +795,305 @@ function saveGalleryMetaMap(value: GalleryMetaMap): void {
 }
 
 /**
+ * 从未知对象中读取布尔值。/ Read a boolean value from unknown record.
+ * @param value 原始对象值 / Raw object value.
+ * @param fallback 回退值 / Fallback value.
+ * @returns 合法布尔值 / Normalized boolean.
+ */
+function asBool(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+/**
+ * 从未知对象中读取有限数字。/ Read a finite numeric value from unknown record.
+ * @param value 原始对象值 / Raw object value.
+ * @param fallback 回退值 / Fallback value.
+ * @returns 合法数字 / Normalized number.
+ */
+function asFiniteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * 清洗 FX 开关对象。/ Sanitize effects toggle object.
+ * @param value 原始值 / Raw value.
+ * @returns 合法 EffectsState / Sanitized effects state.
+ */
+function sanitizeEffectsState(value: unknown): EffectsState {
+  const seed = defaultEffects();
+  if (!value || typeof value !== "object") {
+    return seed;
+  }
+  const record = value as Record<string, unknown>;
+  const next = { ...seed };
+  for (const key of EFFECTS) {
+    next[key] = asBool(record[key], seed[key]);
+  }
+  return next;
+}
+
+/**
+ * 清洗 FX 调参对象。/ Sanitize effect tuning object.
+ * @param value 原始值 / Raw value.
+ * @returns 合法 EffectTuning / Sanitized effect tuning.
+ */
+function sanitizeEffectTuning(value: unknown): EffectTuning {
+  const seed = defaultEffectTuning();
+  if (!value || typeof value !== "object") {
+    return seed;
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    glitchPower: asFiniteNumber(record.glitchPower, seed.glitchPower),
+    glitchSpeed: asFiniteNumber(record.glitchSpeed, seed.glitchSpeed),
+    crtPower: asFiniteNumber(record.crtPower, seed.crtPower),
+    scanlinePower: asFiniteNumber(record.scanlinePower, seed.scanlinePower),
+    paletteCycleSpeed: asFiniteNumber(record.paletteCycleSpeed, seed.paletteCycleSpeed),
+    paletteCycleStep: Math.max(1, Math.round(asFiniteNumber(record.paletteCycleStep, seed.paletteCycleStep))),
+    ghostPower: asFiniteNumber(record.ghostPower, seed.ghostPower),
+    ghostSpeed: asFiniteNumber(record.ghostSpeed, seed.ghostSpeed),
+    ditherPower: asFiniteNumber(record.ditherPower, seed.ditherPower),
+    ditherSpeed: asFiniteNumber(record.ditherSpeed, seed.ditherSpeed),
+    wavePower: asFiniteNumber(record.wavePower, seed.wavePower),
+    waveSpeed: asFiniteNumber(record.waveSpeed, seed.waveSpeed),
+    chromaPower: asFiniteNumber(record.chromaPower, seed.chromaPower),
+    pixelSortPower: asFiniteNumber(record.pixelSortPower, seed.pixelSortPower),
+    noisePower: asFiniteNumber(record.noisePower, seed.noisePower),
+    vignettePower: asFiniteNumber(record.vignettePower, seed.vignettePower),
+    outlinePower: asFiniteNumber(record.outlinePower, seed.outlinePower),
+  };
+}
+
+/**
+ * 清洗对话框配置。/ Sanitize dialog configuration.
+ * @param value 原始值 / Raw value.
+ * @returns 合法 DialogState / Sanitized dialog state.
+ */
+function sanitizeDialogState(value: unknown): DialogState {
+  const seed = defaultDialog();
+  if (!value || typeof value !== "object") {
+    return seed;
+  }
+  const record = value as Record<string, unknown>;
+  const style = typeof record.style === "string" && DIALOG_STYLES.includes(record.style as DialogState["style"])
+    ? (record.style as DialogState["style"])
+    : seed.style;
+  return {
+    enabled: asBool(record.enabled, seed.enabled),
+    style,
+    name: typeof record.name === "string" ? record.name : seed.name,
+    text: typeof record.text === "string" ? record.text : seed.text,
+    position: clamp(asFiniteNumber(record.position, seed.position), 0, 100),
+    page: Math.max(0, Math.floor(asFiniteNumber(record.page, seed.page))),
+    typingSpeed: clamp(asFiniteNumber(record.typingSpeed, seed.typingSpeed), 0, 200),
+    autoPage: asBool(record.autoPage, seed.autoPage),
+    autoPageDelay: clamp(asFiniteNumber(record.autoPageDelay, seed.autoPageDelay), 200, 5000),
+  };
+}
+
+/**
+ * 清洗蒙版配置。/ Sanitize mask configuration.
+ * @param value 原始值 / Raw value.
+ * @returns 合法 MaskConfig / Sanitized mask config.
+ */
+function sanitizeMaskConfig(value: unknown): MaskConfig {
+  const seed = toPresetMaskConfig(defaultMask());
+  if (!value || typeof value !== "object") {
+    return seed;
+  }
+  const record = value as Record<string, unknown>;
+  const fxEnabledSeed = seed.fxEnabled;
+  const fxEnabled = { ...fxEnabledSeed };
+  if (record.fxEnabled && typeof record.fxEnabled === "object") {
+    const fxRecord = record.fxEnabled as Record<string, unknown>;
+    for (const key of EFFECTS) {
+      fxEnabled[key] = asBool(fxRecord[key], fxEnabledSeed[key]);
+    }
+  }
+  return {
+    enabled: asBool(record.enabled, seed.enabled),
+    overlayVisible: asBool(record.overlayVisible, seed.overlayVisible),
+    brushSize: clamp(Math.round(asFiniteNumber(record.brushSize, seed.brushSize)), 1, 16),
+    mode: record.mode === "erase" ? "erase" : "paint",
+    fxEnabled,
+  };
+}
+
+/**
+ * 清洗调色板覆盖映射。/ Sanitize palette override mapping.
+ * @param value 原始值 / Raw value.
+ * @returns 清洗后的调色板覆盖 / Sanitized palette overrides.
+ */
+function sanitizePaletteOverrides(value: unknown): Partial<Record<PaletteId, PaletteColor[]>> {
+  const next: Partial<Record<PaletteId, PaletteColor[]>> = {};
+  if (!value || typeof value !== "object") {
+    return next;
+  }
+  for (const [key, colors] of Object.entries(value as Record<string, unknown>)) {
+    if (!(key in PALETTES) || !Array.isArray(colors)) {
+      continue;
+    }
+    const normalized: PaletteColor[] = [];
+    for (const item of colors) {
+      if (!isValidColorRow(item)) {
+        continue;
+      }
+      normalized.push(normalizeColor(item));
+    }
+    if (normalized.length > 0) {
+      next[key as PaletteId] = normalizePalette(normalized);
+    }
+  }
+  return next;
+}
+
+/**
+ * 清洗动画配置。/ Sanitize animation configuration.
+ * @param value 原始值 / Raw value.
+ * @returns 合法 AnimationState / Sanitized animation state.
+ */
+function sanitizeAnimationState(value: unknown): AnimationState {
+  const seed = defaultAnimationState();
+  if (!value || typeof value !== "object") {
+    return seed;
+  }
+  const record = value as Record<string, unknown>;
+  const durationMs = clamp(Math.round(asFiniteNumber(record.durationMs, seed.durationMs)), 300, 15000);
+  const progress = clamp(asFiniteNumber(record.progress, seed.progress), 0, 1);
+  return {
+    enabled: asBool(record.enabled, seed.enabled),
+    playing: false,
+    loop: asBool(record.loop, seed.loop),
+    durationMs,
+    progress,
+    startTuning: sanitizeEffectTuning(record.startTuning),
+    endTuning: sanitizeEffectTuning(record.endTuning),
+  };
+}
+
+/**
+ * 清洗参数历史快照。/ Sanitize one parameter history snapshot.
+ * @param value 原始值 / Raw value.
+ * @returns 合法快照；失败返回 null / Sanitized snapshot or null.
+ */
+function sanitizeParamHistorySnapshot(value: unknown): ParamHistorySnapshot | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const palette = normalizePaletteId(record.palette) ?? "studio";
+  const pixelSize = Math.max(1, Math.floor(asFiniteNumber(record.pixelSize, 4)));
+  const effectPipelineOrder = Array.isArray(record.effectPipelineOrder)
+    ? normalizeEffectPipelineOrder(record.effectPipelineOrder as Array<keyof EffectsState>)
+    : defaultEffectPipelineOrder();
+  return {
+    pixelSize,
+    pixelizeAlgorithm: normalizePixelizeAlgorithm(record.pixelizeAlgorithm),
+    palette,
+    paletteOverrides: sanitizePaletteOverrides(record.paletteOverrides),
+    effects: sanitizeEffectsState(record.effects),
+    effectTuning: sanitizeEffectTuning(record.effectTuning),
+    dialog: sanitizeDialogState(record.dialog),
+    maskConfig: sanitizeMaskConfig(record.maskConfig),
+    animation: sanitizeAnimationState(record.animation),
+    effectPipelineOrder,
+  };
+}
+
+/**
+ * 从本地读取参数历史。/ Load parameter history from local storage.
+ * @returns 历史快照列表 / History entry list.
+ */
+function loadParamHistoryFromStorage(): ParamHistoryEntry[] {
+  try {
+    const raw = window.localStorage.getItem(PARAM_HISTORY_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const entries: ParamHistoryEntry[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const record = item as Record<string, unknown>;
+      if (
+        typeof record.id !== "string"
+        || typeof record.createdAt !== "string"
+        || typeof record.label !== "string"
+      ) {
+        continue;
+      }
+      const snapshot = sanitizeParamHistorySnapshot(record.snapshot);
+      if (!snapshot) {
+        continue;
+      }
+      entries.push({
+        id: record.id,
+        createdAt: record.createdAt,
+        label: record.label,
+        snapshot,
+      });
+      if (entries.length >= HISTORY_LIMIT) {
+        break;
+      }
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 将参数历史写入本地。/ Persist parameter history to local storage.
+ * @param entries 历史列表 / History entries.
+ * @returns 无返回值 / No return value.
+ */
+function saveParamHistoryToStorage(entries: ParamHistoryEntry[]): void {
+  try {
+    window.localStorage.setItem(PARAM_HISTORY_STORAGE_KEY, JSON.stringify(entries.slice(0, HISTORY_LIMIT)));
+  } catch {
+    // 本地存储失败时忽略。/ Ignore storage failures.
+  }
+}
+
+/**
+ * 检测当前环境是否支持 WebGL。/ Detect whether current environment supports WebGL.
+ * @returns 是否支持 WebGL / Whether WebGL is supported.
+ */
+function hasWebGLSupport(): boolean {
+  try {
+    const probe = document.createElement("canvas");
+    return Boolean(probe.getContext("webgl") || probe.getContext("experimental-webgl"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 读取 WebGL 加速开关（默认按能力开启）。/ Load WebGL acceleration flag (defaults to capability-on).
+ * @returns WebGL 加速开关 / WebGL acceleration flag.
+ */
+function loadWebglAccelerationSetting(): boolean {
+  const supported = hasWebGLSupport();
+  if (!supported) {
+    return false;
+  }
+  try {
+    const raw = window.localStorage.getItem(WEBGL_ACCEL_STORAGE_KEY);
+    if (raw === null) {
+      return true;
+    }
+    return raw === "1";
+  } catch {
+    return true;
+  }
+}
+
+/**
  * 像素工作流核心 Hook。/ Core hook for the pixel workflow.
  * @param ghostSrc 像素机器人图片地址 / Pixel mascot image source.
  * @returns UI 层所需的状态与动作集合 / State and actions consumed by UI components.
@@ -721,6 +1102,7 @@ export function usePixelConverter(ghostSrc: string) {
   const [lang, setLang] = useState<Lang>(detectLanguage);
   const [statusKey, setStatusKey] = useState("statusReady");
   const [pixelSize, setPixelSize] = useState<number>(4);
+  const [pixelizeAlgorithm, setPixelizeAlgorithm] = useState<PixelizeAlgorithm>("standard");
   const [palette, setPalette] = useState<PaletteId>("studio");
   const [paletteOverrides, setPaletteOverrides] = useState<Partial<Record<PaletteId, PaletteColor[]>>>({});
   const [effects, setEffects] = useState<EffectsState>(defaultEffects);
@@ -741,9 +1123,12 @@ export function usePixelConverter(ghostSrc: string) {
   const [batchProgress, setBatchProgress] = useState<BatchProgress>(createEmptyBatchProgress);
   const [batchNamingTemplate, setBatchNamingTemplate] = useState(defaultBatchNamingTemplate);
   const [performanceMode, setPerformanceMode] = useState(false);
+  const [webglSupported] = useState<boolean>(hasWebGLSupport);
+  const [webglAcceleration, setWebglAcceleration] = useState<boolean>(loadWebglAccelerationSetting);
   const [gifFps, setGifFps] = useState(GIF_DEFAULT_FPS);
   const [apngFps, setApngFps] = useState(APNG_DEFAULT_FPS);
   const [exportLoopCount, setExportLoopCount] = useState(0);
+  const [spriteColumns, setSpriteColumns] = useState(SPRITE_COLUMNS_DEFAULT);
   const [galleryItems, setGalleryItems] = useState<GalleryImageView[]>([]);
   const [sourcePreviewUrl, setSourcePreviewUrl] = useState<string | null>(null);
   const [maskToolMode, setMaskToolMode] = useState<MaskToolMode>("brush");
@@ -752,7 +1137,9 @@ export function usePixelConverter(ghostSrc: string) {
   const [effectPipelineOrder, setEffectPipelineOrder] = useState<Array<keyof EffectsState>>(defaultEffectPipelineOrder);
   const [fxPipelinePresets, setFxPipelinePresets] = useState<FxPipelinePreset[]>(loadFxPipelinePresets);
   const [selectedFxPipelinePresetId, setSelectedFxPipelinePresetId] = useState<string | null>(null);
-  const [paramHistory, setParamHistory] = useState<ParamHistoryEntry[]>([]);
+  const [paramHistory, setParamHistory] = useState<ParamHistoryEntry[]>(loadParamHistoryFromStorage);
+  const [activeParamHistoryId, setActiveParamHistoryId] = useState<string | null>(paramHistory[0]?.id ?? null);
+  const [externalPlugins, setExternalPlugins] = useState<ExternalPluginRuntime[]>([]);
 
   const sourceImageRef = useRef<HTMLImageElement | null>(null);
   const sourcePreviewUrlRef = useRef<string | null>(null);
@@ -778,8 +1165,9 @@ export function usePixelConverter(ghostSrc: string) {
   const gridCacheIdRef = useRef<WeakMap<PixelGrid, string>>(new WeakMap());
   const galleryMetaMapRef = useRef<GalleryMetaMap>(loadGalleryMetaMap());
   const historySuspendRef = useRef(false);
-  const historyHashRef = useRef("");
-  const historyCounterRef = useRef(0);
+  const historyHashRef = useRef(paramHistory[0] ? JSON.stringify(paramHistory[0].snapshot) : "");
+  const historyCounterRef = useRef(paramHistory.length);
+  const pluginHostRef = useRef<PluginHostPublicApi | null>(null);
 
   const paletteColorsById = useMemo(() => {
     const ids = Object.keys(PALETTES) as PaletteId[];
@@ -809,6 +1197,14 @@ export function usePixelConverter(ghostSrc: string) {
   const dialogPages = useMemo(() => parseDialogPages(dialog.text), [dialog.text]);
   const currentDialogPage = clamp(dialog.page, 0, Math.max(0, dialogPages.length - 1));
   const currentDialogText = dialogPages[currentDialogPage] ?? "";
+  const activeParamHistoryIndex = useMemo(() => {
+    if (!activeParamHistoryId) {
+      return -1;
+    }
+    return paramHistory.findIndex((entry) => entry.id === activeParamHistoryId);
+  }, [activeParamHistoryId, paramHistory]);
+  const canUndoParamHistory = activeParamHistoryIndex >= 0 && activeParamHistoryIndex < paramHistory.length - 1;
+  const canRedoParamHistory = activeParamHistoryIndex > 0;
 
   const strings = STRINGS[lang];
   const t = useCallback(
@@ -936,7 +1332,12 @@ export function usePixelConverter(ghostSrc: string) {
     };
   }, []);
 
-  const pixelizeFileWithWorker = useCallback(async (file: File, targetPixelSize: number, paletteColors: PaletteColor[]) => {
+  const pixelizeFileWithWorker = useCallback(async (
+    file: File,
+    targetPixelSize: number,
+    paletteColors: PaletteColor[],
+    algorithm: PixelizeAlgorithm,
+  ) => {
     if (typeof Worker === "undefined") {
       throw new Error("worker_unavailable");
     }
@@ -984,6 +1385,7 @@ export function usePixelConverter(ghostSrc: string) {
         mimeType: file.type || "image/png",
         pixelSize: targetPixelSize,
         palette: paletteColors,
+        algorithm,
       };
       worker.postMessage(request, [buffer]);
     });
@@ -1030,6 +1432,34 @@ export function usePixelConverter(ghostSrc: string) {
   useEffect(() => {
     savePresetsToStorage(presets);
   }, [presets]);
+
+  useEffect(() => {
+    saveParamHistoryToStorage(paramHistory);
+  }, [paramHistory]);
+
+  useEffect(() => {
+    if (paramHistory.length === 0) {
+      if (activeParamHistoryId !== null) {
+        setActiveParamHistoryId(null);
+      }
+      return;
+    }
+    if (!activeParamHistoryId || !paramHistory.some((entry) => entry.id === activeParamHistoryId)) {
+      setActiveParamHistoryId(paramHistory[0].id);
+    }
+  }, [activeParamHistoryId, paramHistory]);
+
+  useEffect(() => {
+    if (!webglSupported && webglAcceleration) {
+      setWebglAcceleration(false);
+      return;
+    }
+    try {
+      window.localStorage.setItem(WEBGL_ACCEL_STORAGE_KEY, webglAcceleration ? "1" : "0");
+    } catch {
+      // 本地存储失败时忽略。/ Ignore storage failures.
+    }
+  }, [webglAcceleration, webglSupported]);
 
   useEffect(() => {
     if (!selectedPresetId) {
@@ -1082,14 +1512,14 @@ export function usePixelConverter(ghostSrc: string) {
     if (!sourceImageRef.current) {
       return;
     }
-    const nextGrid = imageToPixelGrid(sourceImageRef.current, pixelSize, selectedPaletteColors);
+    const nextGrid = imageToPixelGrid(sourceImageRef.current, pixelSize, selectedPaletteColors, pixelizeAlgorithm);
     setGrid(nextGrid);
     resetMaskDataForGrid(nextGrid);
     setStatusKey("statusDone");
     revealCountRef.current = 0;
     pageRevealFinishedAtRef.current = null;
     dirtyRef.current = true;
-  }, [pixelSize, resetMaskDataForGrid, selectedPaletteColors]);
+  }, [pixelSize, pixelizeAlgorithm, resetMaskDataForGrid, selectedPaletteColors]);
 
   useEffect(() => {
     rebuildGrid();
@@ -1105,12 +1535,12 @@ export function usePixelConverter(ghostSrc: string) {
       let nextGrid: PixelGrid;
       if (performanceMode) {
         try {
-          nextGrid = await pixelizeFileWithWorker(file, pixelSize, selectedPaletteColors);
+          nextGrid = await pixelizeFileWithWorker(file, pixelSize, selectedPaletteColors, pixelizeAlgorithm);
         } catch {
-          nextGrid = imageToPixelGrid(image, pixelSize, selectedPaletteColors);
+          nextGrid = imageToPixelGrid(image, pixelSize, selectedPaletteColors, pixelizeAlgorithm);
         }
       } else {
-        nextGrid = imageToPixelGrid(image, pixelSize, selectedPaletteColors);
+        nextGrid = imageToPixelGrid(image, pixelSize, selectedPaletteColors, pixelizeAlgorithm);
       }
       setGrid(nextGrid);
       resetMaskDataForGrid(nextGrid);
@@ -1120,7 +1550,7 @@ export function usePixelConverter(ghostSrc: string) {
     } catch {
       setStatusKey("statusReady");
     }
-  }, [performanceMode, pixelSize, pixelizeFileWithWorker, resetMaskDataForGrid, selectedPaletteColors, setSourcePreviewFromFile]);
+  }, [performanceMode, pixelSize, pixelizeAlgorithm, pixelizeFileWithWorker, resetMaskDataForGrid, selectedPaletteColors, setSourcePreviewFromFile]);
 
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
@@ -1654,6 +2084,7 @@ export function usePixelConverter(ghostSrc: string) {
       updatedAt: timestamp,
       state: {
         pixelSize,
+        pixelizeAlgorithm,
         palette,
         paletteOverrides: JSON.parse(JSON.stringify(paletteOverrides)) as Partial<Record<string, PaletteColor[]>>,
         effects: { ...effects },
@@ -1667,7 +2098,7 @@ export function usePixelConverter(ghostSrc: string) {
     setSelectedPresetId(preset.id);
     setStatusKey("statusPresetSaved");
     return true;
-  }, [dialog, effectTuning, effects, mask, palette, paletteOverrides, pixelSize, presets.length]);
+  }, [dialog, effectTuning, effects, mask, palette, paletteOverrides, pixelSize, pixelizeAlgorithm, presets.length]);
 
   const applyPreset = useCallback((presetId: string) => {
     const preset = presets.find((entry) => entry.id === presetId);
@@ -1686,6 +2117,7 @@ export function usePixelConverter(ghostSrc: string) {
     }
 
     setPixelSize(nextPixelSize);
+    setPixelizeAlgorithm(normalizePixelizeAlgorithm((state as { pixelizeAlgorithm?: unknown }).pixelizeAlgorithm));
     const resolvedPalette = normalizePaletteId(state.palette);
     if (resolvedPalette) {
       setPalette(resolvedPalette);
@@ -1787,12 +2219,224 @@ export function usePixelConverter(ghostSrc: string) {
     return true;
   }, []);
 
+  /**
+   * 校验并注册外部插件。/ Validate and register an external plugin.
+   * @param plugin 外部插件定义 / External plugin definition.
+   * @returns 是否注册成功 / Whether plugin registration succeeded.
+   */
+  const registerExternalPlugin = useCallback((plugin: ExternalPluginDefinition) => {
+    if (
+      !plugin
+      || typeof plugin.id !== "string"
+      || typeof plugin.name !== "string"
+      || typeof plugin.apply !== "function"
+    ) {
+      setStatusKey("statusPluginError");
+      return false;
+    }
+    const id = plugin.id.trim();
+    const name = plugin.name.trim();
+    if (!id || !name) {
+      setStatusKey("statusPluginError");
+      return false;
+    }
+    const strength = clamp(Number(plugin.defaultStrength ?? 100), 0, 200);
+    setExternalPlugins((previous) => {
+      const nextPlugin: ExternalPluginRuntime = {
+        ...plugin,
+        id,
+        name,
+        enabled: plugin.defaultEnabled !== false,
+        strength,
+      };
+      const existed = previous.some((entry) => entry.id === id);
+      const merged = existed
+        ? previous.map((entry) => (entry.id === id ? nextPlugin : entry))
+        : [...previous, nextPlugin];
+      return merged.slice(0, 32);
+    });
+    dirtyRef.current = true;
+    setStatusKey("statusPluginRegistered");
+    return true;
+  }, []);
+
+  /**
+   * 注销外部插件。/ Unregister one external plugin.
+   * @param pluginId 插件 ID / Plugin id.
+   * @returns 是否删除成功 / Whether removal succeeded.
+   */
+  const unregisterExternalPlugin = useCallback((pluginId: string) => {
+    let removed = false;
+    setExternalPlugins((previous) => {
+      const next = previous.filter((entry) => {
+        const keep = entry.id !== pluginId;
+        if (!keep) {
+          removed = true;
+        }
+        return keep;
+      });
+      return next;
+    });
+    if (removed) {
+      setStatusKey("statusPluginRemoved");
+      dirtyRef.current = true;
+    } else {
+      setStatusKey("statusPluginError");
+    }
+    return removed;
+  }, []);
+
+  /**
+   * 导入外部插件模块文件（`.js/.mjs`）。/ Import an external plugin module file (`.js/.mjs`).
+   * @param file 插件文件 / Plugin file.
+   * @returns 是否导入成功 / Whether import succeeded.
+   */
+  const importExternalPlugin = useCallback(async (file: File) => {
+    let importedCount = 0;
+    const hostApi: PluginHostPublicApi = {
+      version: "1",
+      registerPlugin: (plugin) => {
+        const ok = registerExternalPlugin(plugin);
+        if (ok) {
+          importedCount += 1;
+        }
+        return ok;
+      },
+      unregisterPlugin: unregisterExternalPlugin,
+      listPlugins: () => externalPlugins.map((item) => ({
+        id: item.id,
+        name: item.name,
+        enabled: item.enabled,
+        strength: item.strength,
+        version: item.version,
+        author: item.author,
+        description: item.description,
+      })),
+    };
+    pluginHostRef.current = hostApi;
+
+    const moduleUrl = URL.createObjectURL(new Blob([await file.text()], { type: "text/javascript" }));
+    try {
+      const module = await import(/* @vite-ignore */ moduleUrl);
+      if (typeof module.default === "function") {
+        await module.default(hostApi);
+      }
+      if (module.plugin) {
+        hostApi.registerPlugin(module.plugin as ExternalPluginDefinition);
+      }
+      if (Array.isArray(module.plugins)) {
+        for (const plugin of module.plugins as ExternalPluginDefinition[]) {
+          hostApi.registerPlugin(plugin);
+        }
+      }
+      const success = importedCount > 0;
+      setStatusKey(success ? "statusPluginImported" : "statusPluginError");
+      return success;
+    } catch {
+      setStatusKey("statusPluginError");
+      return false;
+    } finally {
+      URL.revokeObjectURL(moduleUrl);
+    }
+  }, [externalPlugins, registerExternalPlugin, unregisterExternalPlugin]);
+
+  /**
+   * 切换外部插件启用状态。/ Toggle one external plugin enabled state.
+   * @param pluginId 插件 ID / Plugin id.
+   * @param enabled 是否启用 / Enabled flag.
+   * @returns 无返回值 / No return value.
+   */
+  const setExternalPluginEnabled = useCallback((pluginId: string, enabled: boolean) => {
+    setExternalPlugins((previous) => previous.map((plugin) => (
+      plugin.id === pluginId
+        ? { ...plugin, enabled }
+        : plugin
+    )));
+    dirtyRef.current = true;
+  }, []);
+
+  /**
+   * 设置外部插件强度。/ Set one external plugin strength.
+   * @param pluginId 插件 ID / Plugin id.
+   * @param strength 强度 0..200 / Strength 0..200.
+   * @returns 无返回值 / No return value.
+   */
+  const setExternalPluginStrength = useCallback((pluginId: string, strength: number) => {
+    const safe = clamp(Math.round(strength), 0, 200);
+    setExternalPlugins((previous) => previous.map((plugin) => (
+      plugin.id === pluginId
+        ? { ...plugin, strength: safe }
+        : plugin
+    )));
+    dirtyRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    const hostApi: PluginHostPublicApi = {
+      version: "1",
+      registerPlugin: registerExternalPlugin,
+      unregisterPlugin: unregisterExternalPlugin,
+      listPlugins: () => externalPlugins.map((item) => ({
+        id: item.id,
+        name: item.name,
+        enabled: item.enabled,
+        strength: item.strength,
+        version: item.version,
+        author: item.author,
+        description: item.description,
+      })),
+    };
+    pluginHostRef.current = hostApi;
+    const win = window as WindowWithPluginHost;
+    const previous = win.PixelWorkshop;
+    win.PixelWorkshop = hostApi;
+    return () => {
+      if (win.PixelWorkshop === hostApi) {
+        if (previous) {
+          win.PixelWorkshop = previous;
+        } else {
+          delete win.PixelWorkshop;
+        }
+      }
+    };
+  }, [externalPlugins, registerExternalPlugin, unregisterExternalPlugin]);
+
+  /**
+   * 应用一个参数历史快照到当前状态。/ Apply one history snapshot to current runtime state.
+   * @param snapshot 参数快照 / Parameter snapshot.
+   * @returns 无返回值 / No return value.
+   */
+  const applyParamHistorySnapshot = useCallback((snapshot: ParamHistorySnapshot) => {
+    const nextPaletteOverrides: Partial<Record<PaletteId, PaletteColor[]>> = {};
+    for (const [key, colors] of Object.entries(snapshot.paletteOverrides ?? {})) {
+      if (key in PALETTES) {
+        nextPaletteOverrides[key as PaletteId] = normalizePalette(colors as PaletteColor[]);
+      }
+    }
+    setPixelSize(Math.max(1, Math.floor(snapshot.pixelSize)));
+    setPixelizeAlgorithm(normalizePixelizeAlgorithm(snapshot.pixelizeAlgorithm));
+    setPalette(snapshot.palette);
+    setPaletteOverrides(nextPaletteOverrides);
+    setEffects({ ...snapshot.effects });
+    setEffectTuning({ ...snapshot.effectTuning });
+    setDialog({ ...snapshot.dialog });
+    setAnimation(cloneAnimationState(snapshot.animation));
+    setEffectPipelineOrder(normalizeEffectPipelineOrder(snapshot.effectPipelineOrder));
+    const width = grid?.width ?? 0;
+    const height = grid?.height ?? 0;
+    setMask(createMaskStateFromConfig(snapshot.maskConfig, width, height));
+    revealCountRef.current = 0;
+    pageRevealFinishedAtRef.current = null;
+    dirtyRef.current = true;
+  }, [grid?.height, grid?.width]);
+
   const captureParamHistorySnapshot = useCallback((label?: string) => {
     if (historySuspendRef.current) {
       return;
     }
     const snapshot: ParamHistorySnapshot = {
       pixelSize,
+      pixelizeAlgorithm,
       palette,
       paletteOverrides: JSON.parse(JSON.stringify(paletteOverrides)) as Partial<Record<PaletteId, PaletteColor[]>>,
       effects: { ...effects },
@@ -1814,8 +2458,18 @@ export function usePixelConverter(ghostSrc: string) {
       label: label?.trim() || `${t("historyItemLabel")} #${historyCounterRef.current}`,
       snapshot,
     };
-    setParamHistory((previous) => [entry, ...previous].slice(0, HISTORY_LIMIT));
-  }, [animation, dialog, effectPipelineOrder, effectTuning, effects, mask, palette, paletteOverrides, pixelSize, t]);
+    setParamHistory((previous) => {
+      let base = previous;
+      if (activeParamHistoryId) {
+        const activeIndex = previous.findIndex((item) => item.id === activeParamHistoryId);
+        if (activeIndex > 0) {
+          base = previous.slice(activeIndex);
+        }
+      }
+      return [entry, ...base].slice(0, HISTORY_LIMIT);
+    });
+    setActiveParamHistoryId(entry.id);
+  }, [activeParamHistoryId, animation, dialog, effectPipelineOrder, effectTuning, effects, mask, palette, paletteOverrides, pixelSize, pixelizeAlgorithm, t]);
 
   useEffect(() => {
     captureParamHistorySnapshot();
@@ -1828,37 +2482,48 @@ export function usePixelConverter(ghostSrc: string) {
       return false;
     }
     const snapshot = entry.snapshot;
-    const nextPaletteOverrides: Partial<Record<PaletteId, PaletteColor[]>> = {};
-    for (const [key, colors] of Object.entries(snapshot.paletteOverrides ?? {})) {
-      if (key in PALETTES) {
-        nextPaletteOverrides[key as PaletteId] = normalizePalette(colors as PaletteColor[]);
-      }
-    }
     historySuspendRef.current = true;
-    setPixelSize(Math.max(1, Math.floor(snapshot.pixelSize)));
-    setPalette(snapshot.palette);
-    setPaletteOverrides(nextPaletteOverrides);
-    setEffects({ ...snapshot.effects });
-    setEffectTuning({ ...snapshot.effectTuning });
-    setDialog({ ...snapshot.dialog });
-    setAnimation(cloneAnimationState(snapshot.animation));
-    setEffectPipelineOrder(normalizeEffectPipelineOrder(snapshot.effectPipelineOrder));
-    const width = grid?.width ?? 0;
-    const height = grid?.height ?? 0;
-    setMask(createMaskStateFromConfig(snapshot.maskConfig, width, height));
-    revealCountRef.current = 0;
-    pageRevealFinishedAtRef.current = null;
-    dirtyRef.current = true;
+    applyParamHistorySnapshot(snapshot);
+    setActiveParamHistoryId(entry.id);
     window.setTimeout(() => {
       historySuspendRef.current = false;
-      captureParamHistorySnapshot(entry.label);
+      historyHashRef.current = JSON.stringify(snapshot);
     }, 0);
     setStatusKey("statusHistoryRestored");
     return true;
-  }, [captureParamHistorySnapshot, grid?.height, grid?.width, paramHistory]);
+  }, [applyParamHistorySnapshot, paramHistory]);
+
+  const undoParamHistory = useCallback(() => {
+    if (!canUndoParamHistory) {
+      setStatusKey("statusHistoryError");
+      return false;
+    }
+    const index = activeParamHistoryIndex >= 0 ? activeParamHistoryIndex : 0;
+    const target = paramHistory[index + 1];
+    if (!target) {
+      setStatusKey("statusHistoryError");
+      return false;
+    }
+    return restoreParamHistory(target.id);
+  }, [activeParamHistoryIndex, canUndoParamHistory, paramHistory, restoreParamHistory]);
+
+  const redoParamHistory = useCallback(() => {
+    if (!canRedoParamHistory) {
+      setStatusKey("statusHistoryError");
+      return false;
+    }
+    const index = activeParamHistoryIndex >= 0 ? activeParamHistoryIndex : 0;
+    const target = paramHistory[index - 1];
+    if (!target) {
+      setStatusKey("statusHistoryError");
+      return false;
+    }
+    return restoreParamHistory(target.id);
+  }, [activeParamHistoryIndex, canRedoParamHistory, paramHistory, restoreParamHistory]);
 
   const clearParamHistory = useCallback(() => {
     setParamHistory([]);
+    setActiveParamHistoryId(null);
     historyCounterRef.current = 0;
     historyHashRef.current = "";
     setStatusKey("statusHistoryCleared");
@@ -1869,6 +2534,45 @@ export function usePixelConverter(ghostSrc: string) {
     page: currentDialogPage,
     text: currentDialogText,
   }), [currentDialogPage, currentDialogText, dialog]);
+
+  /**
+   * 在已渲染帧上应用外部插件。/ Apply registered external plugins on top of rendered frame.
+   * @param canvas 目标画布 / Target canvas.
+   * @param timeMs 当前时间戳 / Current timestamp.
+   * @param currentGrid 当前网格 / Current grid.
+   * @param currentTuning 当前 FX 调参 / Current effect tuning.
+   * @returns 无返回值 / No return value.
+   */
+  const applyExternalPluginsToCanvas = useCallback((
+    canvas: HTMLCanvasElement,
+    timeMs: number,
+    currentGrid: PixelGrid,
+    currentTuning: EffectTuning,
+  ) => {
+    if (externalPlugins.length === 0) {
+      return;
+    }
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) {
+      return;
+    }
+    for (const plugin of externalPlugins) {
+      if (!plugin.enabled) {
+        continue;
+      }
+      try {
+        plugin.apply(ctx, canvas, {
+          timeMs,
+          strength: plugin.strength,
+          grid: currentGrid,
+          effects,
+          effectTuning: currentTuning,
+        });
+      } catch {
+        // 忽略单插件异常，避免拖垮主渲染。/ Ignore single plugin failures to keep main render alive.
+      }
+    }
+  }, [effects, externalPlugins]);
 
   const getGridCacheId = useCallback((targetGrid: PixelGrid) => {
     const cached = gridCacheIdRef.current.get(targetGrid);
@@ -1886,6 +2590,9 @@ export function usePixelConverter(ghostSrc: string) {
     overrideTuning?: EffectTuning,
   ) => {
     const resolvedTuning = overrideTuning ?? effectTuning;
+    const pluginCacheKey = externalPlugins
+      .map((plugin) => `${plugin.id}:${plugin.enabled ? 1 : 0}:${plugin.strength}`)
+      .join(",");
     const cacheKey = [
       getGridCacheId(inputGrid),
       Math.round(timeMs),
@@ -1897,6 +2604,8 @@ export function usePixelConverter(ghostSrc: string) {
       mask.enabled ? 1 : 0,
       mask.mode,
       mask.brushSize,
+      webglAcceleration ? 1 : 0,
+      pluginCacheKey,
     ].join("|");
     const cached = exportFrameCacheRef.current.get(cacheKey);
     if (cached) {
@@ -1915,7 +2624,9 @@ export function usePixelConverter(ghostSrc: string) {
       ghostRef.current,
       timeMs,
       effectPlugins,
+      webglAcceleration && webglSupported,
     );
+    applyExternalPluginsToCanvas(tempCanvas, timeMs, inputGrid, resolvedTuning);
     const scaled = scaleCanvasForExport(tempCanvas, 1200);
     exportFrameCacheRef.current.set(cacheKey, scaled);
     if (exportFrameCacheRef.current.size > 72) {
@@ -1925,7 +2636,7 @@ export function usePixelConverter(ghostSrc: string) {
       }
     }
     return scaled;
-  }, [dialog.enabled, dialog.style, effectPipelineOrder, effectPlugins, effectTuning, effects, getGridCacheId, mask, renderDialogForFrame]);
+  }, [applyExternalPluginsToCanvas, dialog.enabled, dialog.style, effectPipelineOrder, effectPlugins, effectTuning, effects, externalPlugins, getGridCacheId, mask, renderDialogForFrame, webglAcceleration, webglSupported]);
 
   const processBatchFiles = useCallback(async (files: File[]) => {
     if (files.length === 0 || isBatchProcessing) {
@@ -1958,10 +2669,10 @@ export function usePixelConverter(ghostSrc: string) {
           try {
             let batchGrid: PixelGrid;
             if (performanceMode) {
-              batchGrid = await pixelizeFileWithWorker(file, pixelSize, selectedPaletteColors);
+              batchGrid = await pixelizeFileWithWorker(file, pixelSize, selectedPaletteColors, pixelizeAlgorithm);
             } else {
               const image = await fileToImage(file);
-              batchGrid = imageToPixelGrid(image, pixelSize, selectedPaletteColors);
+              batchGrid = imageToPixelGrid(image, pixelSize, selectedPaletteColors, pixelizeAlgorithm);
             }
             const rendered = renderGridToExportCanvas(batchGrid, performance.now() + index * 120);
             const blob = await new Promise<Blob | null>((resolve) => rendered.toBlob(resolve, "image/png"));
@@ -2031,7 +2742,7 @@ export function usePixelConverter(ghostSrc: string) {
       }));
       dirtyRef.current = true;
     }
-  }, [batchNamingTemplate, isBatchProcessing, performanceMode, pixelSize, pixelizeFileWithWorker, renderGridToExportCanvas, selectedPaletteColors]);
+  }, [batchNamingTemplate, isBatchProcessing, performanceMode, pixelSize, pixelizeAlgorithm, pixelizeFileWithWorker, renderGridToExportCanvas, selectedPaletteColors]);
 
   processBatchFilesRef.current = (files: File[]) => {
     void processBatchFiles(files);
@@ -2279,6 +2990,7 @@ export function usePixelConverter(ghostSrc: string) {
       : null;
     const project = createProjectFile({
       pixelSize,
+      pixelizeAlgorithm,
       palette,
       paletteOverrides: JSON.parse(JSON.stringify(paletteOverrides)) as Partial<Record<string, PaletteColor[]>>,
       effects: { ...effects },
@@ -2290,6 +3002,7 @@ export function usePixelConverter(ghostSrc: string) {
       selectedPresetId,
       batchNamingTemplate,
       performanceMode,
+      webglAcceleration,
       effectPipelineOrder: normalizeEffectPipelineOrder(effectPipelineOrder),
       animation: {
         ...animation,
@@ -2309,7 +3022,7 @@ export function usePixelConverter(ghostSrc: string) {
     document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
     setStatusKey("statusProjectSaved");
-  }, [animation, batchNamingTemplate, dialog, effectPipelineOrder, effectTuning, effects, grid, mask, palette, paletteOverrides, performanceMode, pixelSize, presets, selectedPresetId]);
+  }, [animation, batchNamingTemplate, dialog, effectPipelineOrder, effectTuning, effects, grid, mask, palette, paletteOverrides, performanceMode, pixelSize, pixelizeAlgorithm, presets, selectedPresetId, webglAcceleration]);
 
   const onImportProject = useCallback(async (file: File) => {
     const text = await file.text();
@@ -2334,6 +3047,7 @@ export function usePixelConverter(ghostSrc: string) {
     }
 
     setPixelSize(nextPixelSize);
+    setPixelizeAlgorithm(normalizePixelizeAlgorithm((state as { pixelizeAlgorithm?: unknown }).pixelizeAlgorithm));
     const resolvedPalette = normalizePaletteId(state.palette);
     if (resolvedPalette) {
       setPalette(resolvedPalette);
@@ -2344,6 +3058,9 @@ export function usePixelConverter(ghostSrc: string) {
     setDialog({ ...state.dialog });
     setBatchNamingTemplate(typeof state.batchNamingTemplate === "string" ? state.batchNamingTemplate : defaultBatchNamingTemplate());
     setPerformanceMode(Boolean(state.performanceMode));
+    if (typeof state.webglAcceleration === "boolean") {
+      setWebglAcceleration(state.webglAcceleration && webglSupported);
+    }
     const stateWithPipeline = state as unknown as { effectPipelineOrder?: Array<keyof EffectsState> };
     if (Array.isArray(stateWithPipeline.effectPipelineOrder)) {
       const rawOrder = stateWithPipeline.effectPipelineOrder;
@@ -2392,7 +3109,7 @@ export function usePixelConverter(ghostSrc: string) {
     dirtyRef.current = true;
     setStatusKey("statusProjectLoaded");
     return true;
-  }, [clearSourcePreview]);
+  }, [clearSourcePreview, webglSupported]);
 
   const onExportJson = useCallback(() => {
     if (!grid) {
@@ -2612,10 +3329,14 @@ export function usePixelConverter(ghostSrc: string) {
     const safeFps = clamp(Math.round(fps), 1, 30);
     const timedFxActive =
       effects.glitch
+      || effects.scanlines
       || effects.paletteCycle
       || effects.ghost
       || effects.ditherFade
       || effects.waveWarp
+      || effects.chromaShift
+      || effects.pixelSort
+      || effects.noise
       || animation.enabled;
     const targetDuration = animation.enabled ? Math.max(300, animation.durationMs) : 2400;
     const estimatedFrames = timedFxActive
@@ -2642,7 +3363,7 @@ export function usePixelConverter(ghostSrc: string) {
       height: frames[0].height,
       delayMs: frameDelayMs,
     };
-  }, [animation.enabled, animation.durationMs, effectTuning, effects.ditherFade, effects.ghost, effects.glitch, effects.paletteCycle, effects.waveWarp, grid, renderGridToExportCanvas]);
+  }, [animation.enabled, animation.durationMs, effectTuning, effects.chromaShift, effects.ditherFade, effects.ghost, effects.glitch, effects.noise, effects.paletteCycle, effects.pixelSort, effects.scanlines, effects.waveWarp, grid, renderGridToExportCanvas]);
 
   const onDownloadGif = useCallback(async () => {
     if (isRecording) {
@@ -2704,13 +3425,46 @@ export function usePixelConverter(ghostSrc: string) {
     setStatusKey("statusExportApngDone");
   }, [apngFps, createAnimatedExportFrames, downloadBlobFile, isRecording]);
 
+  const onDownloadSpriteSheet = useCallback(async () => {
+    if (isRecording) {
+      return;
+    }
+    const exported = createAnimatedExportFrames(gifFps);
+    if (!exported) {
+      return;
+    }
+    const frameCount = exported.frames.length;
+    const cols = clamp(Math.round(spriteColumns), 1, Math.max(1, frameCount));
+    const rows = Math.max(1, Math.ceil(frameCount / cols));
+    const sheet = document.createElement("canvas");
+    sheet.width = exported.width * cols;
+    sheet.height = exported.height * rows;
+    const ctx = sheet.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    ctx.imageSmoothingEnabled = false;
+    for (let i = 0; i < frameCount; i += 1) {
+      const frame = exported.frames[i];
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      ctx.drawImage(frame, col * exported.width, row * exported.height);
+    }
+    const blob = await new Promise<Blob | null>((resolve) => sheet.toBlob(resolve, "image/png"));
+    if (!blob) {
+      return;
+    }
+    downloadBlobFile(blob, "pixel-art-spritesheet.png");
+    setStatusKey("statusExportSpriteDone");
+  }, [createAnimatedExportFrames, downloadBlobFile, gifFps, isRecording, spriteColumns]);
+
   useEffect(() => {
     dirtyRef.current = true;
-  }, [animation, dialog, effectPipelineOrder, effectTuning, effects, grid, lang, mask, palette, performanceMode, pixelSize]);
+  }, [animation, dialog, effectPipelineOrder, effectTuning, effects, externalPlugins, grid, lang, mask, palette, performanceMode, pixelSize, webglAcceleration, webglSupported]);
 
   useEffect(() => {
     exportFrameCacheRef.current.clear();
-  }, [animation, dialog, effectPipelineOrder, effectTuning, effects, grid, mask]);
+  }, [animation, dialog, effectPipelineOrder, effectTuning, effects, externalPlugins, grid, mask, webglAcceleration, webglSupported]);
 
   useEffect(() => {
     let rafId = 0;
@@ -2805,10 +3559,15 @@ export function usePixelConverter(ghostSrc: string) {
 
         const hasTimedEffects =
           effects.glitch
+          || effects.scanlines
           || effects.paletteCycle
           || effects.ghost
           || effects.ditherFade
           || effects.waveWarp
+          || effects.chromaShift
+          || effects.pixelSort
+          || effects.noise
+          || externalPlugins.some((plugin) => plugin.enabled && plugin.requiresContinuousRender)
           || (runtimeAnimation.enabled && runtimeAnimation.playing);
         if (hasTimedEffects && effectTick !== lastEffectTickRef.current) {
           lastEffectTickRef.current = effectTick;
@@ -2842,7 +3601,9 @@ export function usePixelConverter(ghostSrc: string) {
             ghostRef.current,
             nowMs,
             effectPlugins,
+            webglAcceleration && webglSupported,
           );
+          applyExternalPluginsToCanvas(canvas, nowMs, grid, tuningForFrame);
           lastRenderCommitRef.current = nowMs;
           dirtyRef.current = false;
         }
@@ -2854,7 +3615,7 @@ export function usePixelConverter(ghostSrc: string) {
     return () => {
       window.cancelAnimationFrame(rafId);
     };
-  }, [currentDialogPage, dialog, dialogPages.length, effectPlugins, effectTuning, effects, grid, isRecording, mask, performanceMode, renderDialogForFrame]);
+  }, [applyExternalPluginsToCanvas, currentDialogPage, dialog, dialogPages.length, effectPlugins, effectTuning, effects, externalPlugins, grid, isRecording, mask, performanceMode, renderDialogForFrame, webglAcceleration, webglSupported]);
 
   useEffect(() => {
     const overlay = maskCanvasRef.current;
@@ -2920,6 +3681,8 @@ export function usePixelConverter(ghostSrc: string) {
     statusKey,
     pixelSize,
     setPixelSize,
+    pixelizeAlgorithm,
+    setPixelizeAlgorithm,
     palette,
     setPalette,
     effects,
@@ -2931,6 +3694,9 @@ export function usePixelConverter(ghostSrc: string) {
     maskFeather,
     presets,
     paramHistory,
+    activeParamHistoryId,
+    canUndoParamHistory,
+    canRedoParamHistory,
     galleryItems,
     sourcePreviewUrl,
     paletteLocks,
@@ -2964,6 +3730,8 @@ export function usePixelConverter(ghostSrc: string) {
     clearMask,
     invertMask,
     restoreParamHistory,
+    undoParamHistory,
+    redoParamHistory,
     clearParamHistory,
     savePreset,
     applyPreset,
@@ -2997,6 +3765,7 @@ export function usePixelConverter(ghostSrc: string) {
     onDownloadPng,
     onDownloadGif,
     onDownloadApng,
+    onDownloadSpriteSheet,
     onDownloadVideo,
     onExportJson,
     onImportJson,
@@ -3010,17 +3779,28 @@ export function usePixelConverter(ghostSrc: string) {
     setBatchNamingTemplate,
     performanceMode,
     setPerformanceMode,
+    webglSupported,
+    webglAcceleration,
+    setWebglAcceleration,
     gifFps,
     setGifFps,
     apngFps,
     setApngFps,
     exportLoopCount,
     setExportLoopCount,
+    spriteColumns,
+    setSpriteColumns,
     toggleEffect,
     moveEffectInPipeline,
     saveFxPipelinePreset,
     applyFxPipelinePreset,
     deleteFxPipelinePreset,
+    externalPlugins,
+    registerExternalPlugin,
+    unregisterExternalPlugin,
+    importExternalPlugin,
+    setExternalPluginEnabled,
+    setExternalPluginStrength,
     paletteColorsById,
     currentPaletteColors: selectedPaletteColors,
     setCurrentPaletteColors,
@@ -3041,6 +3821,7 @@ export function usePixelConverter(ghostSrc: string) {
     prevDialogPage,
     lists: {
       pixelSizes: PIXEL_SIZES,
+      pixelizeAlgorithms: PIXELIZE_ALGORITHMS,
       effects: EFFECTS,
       dialogStyles: DIALOG_STYLES,
       palettes: PALETTES,

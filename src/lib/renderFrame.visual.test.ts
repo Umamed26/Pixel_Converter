@@ -47,10 +47,16 @@ function defaultEffects(): EffectsState {
   return {
     glitch: false,
     crt: false,
+    scanlines: false,
     paletteCycle: false,
     ghost: false,
     ditherFade: false,
     waveWarp: false,
+    chromaShift: false,
+    pixelSort: false,
+    noise: false,
+    vignette: false,
+    outline: false,
   };
 }
 
@@ -59,6 +65,7 @@ function defaultTuning(): EffectTuning {
     glitchPower: 100,
     glitchSpeed: 100,
     crtPower: 100,
+    scanlinePower: 100,
     paletteCycleSpeed: 100,
     paletteCycleStep: 1,
     ghostPower: 100,
@@ -67,6 +74,11 @@ function defaultTuning(): EffectTuning {
     ditherSpeed: 100,
     wavePower: 100,
     waveSpeed: 100,
+    chromaPower: 100,
+    pixelSortPower: 100,
+    noisePower: 100,
+    vignettePower: 100,
+    outlinePower: 100,
   };
 }
 
@@ -97,10 +109,16 @@ function makeMask(grid: PixelGrid, fill = 0): MaskState {
     fxEnabled: {
       glitch: true,
       crt: true,
+      scanlines: true,
       paletteCycle: true,
       ghost: true,
       ditherFade: true,
       waveWarp: true,
+      chromaShift: true,
+      pixelSort: true,
+      noise: true,
+      vignette: true,
+      outline: true,
     },
     data,
     width: grid.width,
@@ -131,10 +149,16 @@ describe("renderFrame FX plugin registry", () => {
   test("keeps deterministic default plugin order", () => {
     expect(DEFAULT_EFFECT_PLUGINS.map((item) => item.key)).toEqual([
       "crt",
+      "scanlines",
       "paletteCycle",
       "ghost",
       "ditherFade",
       "waveWarp",
+      "chromaShift",
+      "pixelSort",
+      "noise",
+      "vignette",
+      "outline",
       "glitch",
     ]);
   });
@@ -148,10 +172,16 @@ describe("renderFrame visual regression hash", () => {
     const allFx: EffectsState = {
       glitch: true,
       crt: true,
+      scanlines: true,
       paletteCycle: true,
       ghost: true,
       ditherFade: true,
       waveWarp: true,
+      chromaShift: true,
+      pixelSort: true,
+      noise: true,
+      vignette: true,
+      outline: true,
     };
     const maskedGlitch = makeMask(grid, 0);
     maskedGlitch.enabled = true;
@@ -177,8 +207,8 @@ describe("renderFrame visual regression hash", () => {
 
     expect(hashes).toMatchInlineSnapshot(`
       {
-        "all": "3e156575",
-        "allMaskedGlitch": "b5975e75",
+        "all": "5b158434",
+        "allMaskedGlitch": "00694ad7",
         "crt": "7f0a92cd",
         "cycleGhost": "a1d7c055",
         "glitch": "3a3ca26d",

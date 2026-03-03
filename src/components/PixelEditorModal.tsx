@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PixelGrid } from "../types";
 
-type EditorTool = "pen" | "eraser" | "fill";
+type EditorTool = "pen" | "eraser" | "fill" | "line" | "rect";
+type SymmetryMode = "none" | "vertical" | "horizontal" | "quad";
 
 const ZOOM_STEPS = [1, 2, 4, 8, 16, 24, 32] as const;
 
@@ -38,6 +39,53 @@ function copyIndices(indices: Uint16Array): Uint16Array {
  * @param colorIndex 颜色索引 / Color index.
  * @returns 无返回值 / No return value.
  */
+function applySymmetricPixel(
+  data: Uint16Array,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  colorIndex: number,
+  symmetry: SymmetryMode,
+): void {
+  const points: Array<[number, number]> = [[x, y]];
+  if (symmetry === "vertical" || symmetry === "quad") {
+    points.push([width - 1 - x, y]);
+  }
+  if (symmetry === "horizontal" || symmetry === "quad") {
+    points.push([x, height - 1 - y]);
+  }
+  if (symmetry === "quad") {
+    points.push([width - 1 - x, height - 1 - y]);
+  }
+
+  const seen = new Set<string>();
+  for (const [px, py] of points) {
+    if (px < 0 || px >= width || py < 0 || py >= height) {
+      continue;
+    }
+    const key = `${px},${py}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    data[py * width + px] = colorIndex;
+  }
+}
+
+/**
+ * 在索引网格上画线。/ Draw a line on the index grid.
+ * @param data 索引数据 / Index buffer.
+ * @param width 网格宽度 / Grid width.
+ * @param height 网格高度 / Grid height.
+ * @param x0 起点 X / Start X.
+ * @param y0 起点 Y / Start Y.
+ * @param x1 终点 X / End X.
+ * @param y1 终点 Y / End Y.
+ * @param colorIndex 颜色索引 / Color index.
+ * @param symmetry 对称模式 / Symmetry mode.
+ * @returns 无返回值 / No return value.
+ */
 function drawLine(
   data: Uint16Array,
   width: number,
@@ -47,6 +95,7 @@ function drawLine(
   x1: number,
   y1: number,
   colorIndex: number,
+  symmetry: SymmetryMode,
 ): void {
   let x = x0;
   let y = y0;
@@ -57,9 +106,7 @@ function drawLine(
   let err = dx + dy;
 
   while (true) {
-    if (x >= 0 && x < width && y >= 0 && y < height) {
-      data[y * width + x] = colorIndex;
-    }
+    applySymmetricPixel(data, width, height, x, y, colorIndex, symmetry);
     if (x === x1 && y === y1) {
       break;
     }
@@ -72,6 +119,45 @@ function drawLine(
       err += dx;
       y += sy;
     }
+  }
+}
+
+/**
+ * 在索引网格上绘制矩形边框。/ Draw a rectangle outline on index grid.
+ * @param data 索引数据 / Index buffer.
+ * @param width 网格宽度 / Grid width.
+ * @param height 网格高度 / Grid height.
+ * @param x0 起点 X / Start X.
+ * @param y0 起点 Y / Start Y.
+ * @param x1 终点 X / End X.
+ * @param y1 终点 Y / End Y.
+ * @param colorIndex 颜色索引 / Color index.
+ * @param symmetry 对称模式 / Symmetry mode.
+ * @returns 无返回值 / No return value.
+ */
+function drawRectOutline(
+  data: Uint16Array,
+  width: number,
+  height: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  colorIndex: number,
+  symmetry: SymmetryMode,
+): void {
+  const minX = Math.min(x0, x1);
+  const maxX = Math.max(x0, x1);
+  const minY = Math.min(y0, y1);
+  const maxY = Math.max(y0, y1);
+
+  for (let x = minX; x <= maxX; x += 1) {
+    applySymmetricPixel(data, width, height, x, minY, colorIndex, symmetry);
+    applySymmetricPixel(data, width, height, x, maxY, colorIndex, symmetry);
+  }
+  for (let y = minY; y <= maxY; y += 1) {
+    applySymmetricPixel(data, width, height, minX, y, colorIndex, symmetry);
+    applySymmetricPixel(data, width, height, maxX, y, colorIndex, symmetry);
   }
 }
 
@@ -150,10 +236,17 @@ interface PixelEditorModalProps {
 export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalProps) {
   const [indices, setIndices] = useState(() => copyIndices(grid.indices));
   const [tool, setTool] = useState<EditorTool>("pen");
+  const [symmetry, setSymmetry] = useState<SymmetryMode>("none");
+  const [showGrid, setShowGrid] = useState(true);
   const [colorIndex, setColorIndex] = useState(0);
   const [zoomIndex, setZoomIndex] = useState(3);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [spacePressed, setSpacePressed] = useState(false);
+  const [shapePreview, setShapePreview] = useState<{
+    tool: "line" | "rect";
+    start: { x: number; y: number };
+    end: { x: number; y: number };
+  } | null>(null);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -175,6 +268,7 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
   useEffect(() => {
     setIndices(copyIndices(grid.indices));
     setColorIndex(0);
+    setShapePreview(null);
     undoRef.current = [];
     redoRef.current = [];
   }, [grid]);
@@ -239,10 +333,10 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
     const nextColor = tool === "eraser" ? 0 : colorIndex;
     setIndices((previous) => {
       const next = copyIndices(previous);
-      drawLine(next, grid.width, grid.height, from.x, from.y, to.x, to.y, nextColor);
+      drawLine(next, grid.width, grid.height, from.x, from.y, to.x, to.y, nextColor, symmetry);
       return next;
     });
-  }, [colorIndex, grid.height, grid.width, tool]);
+  }, [colorIndex, grid.height, grid.width, symmetry, tool]);
 
   const onPointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     if (event.button === 1 || (event.button === 0 && spacePressed)) {
@@ -284,6 +378,23 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
       return;
     }
 
+    if (tool === "line" || tool === "rect") {
+      if (cell.x < 0 || cell.x >= grid.width || cell.y < 0 || cell.y >= grid.height) {
+        return;
+      }
+      const anchor = { x: cell.x, y: cell.y };
+      pushUndo();
+      drawingRef.current = true;
+      lastCellRef.current = anchor;
+      setShapePreview({
+        tool,
+        start: anchor,
+        end: anchor,
+      });
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
+
     pushUndo();
     drawingRef.current = true;
     lastCellRef.current = cell;
@@ -310,6 +421,27 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
     if (!cell) {
       return;
     }
+
+    if (shapePreview) {
+      const clampedCell = {
+        x: clamp(cell.x, 0, grid.width - 1),
+        y: clamp(cell.y, 0, grid.height - 1),
+      };
+      setShapePreview((previous) => {
+        if (!previous) {
+          return previous;
+        }
+        if (previous.end.x === clampedCell.x && previous.end.y === clampedCell.y) {
+          return previous;
+        }
+        return {
+          ...previous,
+          end: clampedCell,
+        };
+      });
+      return;
+    }
+
     if (cell.x < 0 || cell.x >= grid.width || cell.y < 0 || cell.y >= grid.height) {
       return;
     }
@@ -323,13 +455,46 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
     }
     setPixelLine(previous, cell);
     lastCellRef.current = cell;
-  }, [grid.height, grid.width, locateCell, setPixelLine]);
+  }, [grid.height, grid.width, locateCell, setPixelLine, shapePreview]);
 
   const endPointer = useCallback(() => {
+    if (shapePreview) {
+      const nextColor = colorIndex;
+      setIndices((previous) => {
+        const next = copyIndices(previous);
+        if (shapePreview.tool === "line") {
+          drawLine(
+            next,
+            grid.width,
+            grid.height,
+            shapePreview.start.x,
+            shapePreview.start.y,
+            shapePreview.end.x,
+            shapePreview.end.y,
+            nextColor,
+            symmetry,
+          );
+        } else {
+          drawRectOutline(
+            next,
+            grid.width,
+            grid.height,
+            shapePreview.start.x,
+            shapePreview.start.y,
+            shapePreview.end.x,
+            shapePreview.end.y,
+            nextColor,
+            symmetry,
+          );
+        }
+        return next;
+      });
+      setShapePreview(null);
+    }
     panStartRef.current = null;
     drawingRef.current = false;
     lastCellRef.current = null;
-  }, []);
+  }, [colorIndex, grid.height, grid.width, shapePreview, symmetry]);
 
   const onWheel = useCallback((event: React.WheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
@@ -365,6 +530,33 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
         event.preventDefault();
         setSpacePressed(true);
         return;
+      }
+      if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+        const key = event.key.toLowerCase();
+        if (key === "b") {
+          setTool("pen");
+          return;
+        }
+        if (key === "e") {
+          setTool("eraser");
+          return;
+        }
+        if (key === "f") {
+          setTool("fill");
+          return;
+        }
+        if (key === "l") {
+          setTool("line");
+          return;
+        }
+        if (key === "r") {
+          setTool("rect");
+          return;
+        }
+        if (key === "g") {
+          setShowGrid((previous) => !previous);
+          return;
+        }
       }
       if (event.key === "Escape") {
         onClose();
@@ -442,7 +634,7 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
       }
     }
 
-    if (unit >= 4) {
+    if (showGrid && unit >= 4) {
       ctx.strokeStyle = "rgba(0,0,0,0.15)";
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -459,6 +651,51 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
       ctx.stroke();
     }
 
+    if (shapePreview) {
+      const transforms: Array<(x: number, y: number) => { x: number; y: number }> = [
+        (x, y) => ({ x, y }),
+      ];
+      if (symmetry === "vertical" || symmetry === "quad") {
+        transforms.push((x, y) => ({ x: grid.width - 1 - x, y }));
+      }
+      if (symmetry === "horizontal" || symmetry === "quad") {
+        transforms.push((x, y) => ({ x, y: grid.height - 1 - y }));
+      }
+      if (symmetry === "quad") {
+        transforms.push((x, y) => ({ x: grid.width - 1 - x, y: grid.height - 1 - y }));
+      }
+
+      const unique = new Set<string>();
+      ctx.strokeStyle = "rgba(0, 255, 255, 0.9)";
+      ctx.lineWidth = Math.max(1, Math.round(unit / 8));
+      for (const transform of transforms) {
+        const start = transform(shapePreview.start.x, shapePreview.start.y);
+        const end = transform(shapePreview.end.x, shapePreview.end.y);
+        const key = `${start.x},${start.y}|${end.x},${end.y}|${shapePreview.tool}`;
+        if (unique.has(key)) {
+          continue;
+        }
+        unique.add(key);
+        if (shapePreview.tool === "line") {
+          ctx.beginPath();
+          ctx.moveTo(left + (start.x + 0.5) * unit, top + (start.y + 0.5) * unit);
+          ctx.lineTo(left + (end.x + 0.5) * unit, top + (end.y + 0.5) * unit);
+          ctx.stroke();
+        } else {
+          const minX = Math.min(start.x, end.x);
+          const minY = Math.min(start.y, end.y);
+          const maxX = Math.max(start.x, end.x);
+          const maxY = Math.max(start.y, end.y);
+          ctx.strokeRect(
+            left + minX * unit + 0.5,
+            top + minY * unit + 0.5,
+            (maxX - minX + 1) * unit - 1,
+            (maxY - minY + 1) * unit - 1,
+          );
+        }
+      }
+    }
+
     ctx.strokeStyle = "#000";
     ctx.lineWidth = 1;
     ctx.strokeRect(
@@ -467,13 +704,15 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
       grid.width * unit + 1,
       grid.height * unit + 1,
     );
-  }, [grid.colors, grid.height, grid.width, indices, offset.x, offset.y, zoom]);
+  }, [grid.colors, grid.height, grid.width, indices, offset.x, offset.y, shapePreview, showGrid, symmetry, zoom]);
 
   const toolButtons = useMemo(() => {
     const items: Array<{ id: EditorTool; label: string }> = [
       { id: "pen", label: t("pen") },
       { id: "eraser", label: t("eraser") },
       { id: "fill", label: t("fill") },
+      { id: "line", label: t("line") },
+      { id: "rect", label: t("rect") },
     ];
     return items.map((item) => (
       <button
@@ -530,6 +769,25 @@ export function PixelEditorModal({ grid, onSave, onClose, t }: PixelEditorModalP
           >
             +
           </button>
+          <button
+            type="button"
+            className={`retro-btn btn-mini ${showGrid ? "is-active" : ""}`}
+            onClick={() => setShowGrid((previous) => !previous)}
+          >
+            {t("editorGrid")}
+          </button>
+          <label className="editor-symmetry">
+            <span>{t("editorSymmetry")}</span>
+            <select
+              value={symmetry}
+              onChange={(event) => setSymmetry(event.target.value as SymmetryMode)}
+            >
+              <option value="none">{t("symNone")}</option>
+              <option value="vertical">{t("symVertical")}</option>
+              <option value="horizontal">{t("symHorizontal")}</option>
+              <option value="quad">{t("symQuad")}</option>
+            </select>
+          </label>
           <span className="editor-zoom">{grid.width}x{grid.height} | x{zoom}</span>
         </div>
 

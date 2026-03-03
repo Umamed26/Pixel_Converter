@@ -3,6 +3,7 @@ import type {
   BatchProgress,
   MaskSnapshot,
   PaletteColor,
+  PixelizeAlgorithm,
   ProjectFileV1,
   ProjectStateV1,
 } from "../types";
@@ -141,6 +142,15 @@ function parsePaletteOverrides(value: unknown): Partial<Record<string, PaletteCo
 }
 
 /**
+ * 解析像素化算法枚举值。/ Parse pixelization algorithm enum value.
+ * @param value 原始输入 / Raw input.
+ * @returns 合法算法值；缺省回落 standard / Parsed algorithm or `standard` fallback.
+ */
+function parsePixelizeAlgorithm(value: unknown): PixelizeAlgorithm {
+  return value === "edgeAware" ? "edgeAware" : "standard";
+}
+
+/**
  * 从文本解析工程文件。/ Parse a project file from text content.
  * @param text 工程文件文本 / Project file text.
  * @returns 合法工程对象；失败返回 null / Parsed project object or null.
@@ -158,6 +168,7 @@ export function parseProjectFileText(text: string): ProjectFileV1 | null {
     const state = {
       ...stateRaw,
       pixelSize: stateRaw.pixelSize,
+      pixelizeAlgorithm: parsePixelizeAlgorithm(stateRaw.pixelizeAlgorithm),
       palette: stateRaw.palette,
       paletteOverrides: parsePaletteOverrides(stateRaw.paletteOverrides),
     } as ProjectStateV1;

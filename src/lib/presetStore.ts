@@ -5,6 +5,7 @@ import type {
   EffectsState,
   MaskConfig,
   PaletteColor,
+  PixelizeAlgorithm,
   PresetBundleV1,
   PresetV1,
   PresetStateV1,
@@ -29,10 +30,16 @@ const DIALOG_STYLES: DialogState["style"][] = [
 const EFFECT_KEYS: Array<keyof EffectsState> = [
   "glitch",
   "crt",
+  "scanlines",
   "paletteCycle",
   "ghost",
   "ditherFade",
   "waveWarp",
+  "chromaShift",
+  "pixelSort",
+  "noise",
+  "vignette",
+  "outline",
 ];
 
 /**
@@ -131,6 +138,7 @@ function parseEffectTuning(value: unknown): EffectTuning | null {
     "glitchPower",
     "glitchSpeed",
     "crtPower",
+    "scanlinePower",
     "paletteCycleSpeed",
     "paletteCycleStep",
     "ghostPower",
@@ -139,6 +147,11 @@ function parseEffectTuning(value: unknown): EffectTuning | null {
     "ditherSpeed",
     "wavePower",
     "waveSpeed",
+    "chromaPower",
+    "pixelSortPower",
+    "noisePower",
+    "vignettePower",
+    "outlinePower",
   ];
 
   const next = {} as EffectTuning;
@@ -226,6 +239,15 @@ function parseMaskConfig(value: unknown): MaskConfig | null {
 }
 
 /**
+ * 解析像素化算法枚举值。/ Parse pixelization algorithm enum.
+ * @param value 原始输入 / Raw input.
+ * @returns 合法算法值；缺省回落 standard / Parsed algorithm or `standard` fallback.
+ */
+function parsePixelizeAlgorithm(value: unknown): PixelizeAlgorithm {
+  return value === "edgeAware" ? "edgeAware" : "standard";
+}
+
+/**
  * 解析预设 state 主体。/ Parse preset state payload.
  * @param value 原始输入 / Raw input.
  * @returns 合法 PresetStateV1，失败返回 null / Parsed PresetStateV1 or null.
@@ -245,6 +267,7 @@ function parsePresetState(value: unknown): PresetStateV1 | null {
 
   return {
     pixelSize: value.pixelSize,
+    pixelizeAlgorithm: parsePixelizeAlgorithm(value.pixelizeAlgorithm),
     palette: value.palette,
     paletteOverrides: parsePaletteOverrides(value.paletteOverrides),
     effects,

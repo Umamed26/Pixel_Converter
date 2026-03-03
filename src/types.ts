@@ -3,6 +3,8 @@ export type Lang = "zh-CN" | "en";
 
 export type PaletteColor = [number, number, number];
 
+export type PixelizeAlgorithm = "standard" | "edgeAware";
+
 export interface PixelGrid {
   width: number;
   height: number;
@@ -14,16 +16,23 @@ export interface PixelGrid {
 export interface EffectsState {
   glitch: boolean;
   crt: boolean;
+  scanlines: boolean;
   paletteCycle: boolean;
   ghost: boolean;
   ditherFade: boolean;
   waveWarp: boolean;
+  chromaShift: boolean;
+  pixelSort: boolean;
+  noise: boolean;
+  vignette: boolean;
+  outline: boolean;
 }
 
 export interface EffectTuning {
   glitchPower: number;
   glitchSpeed: number;
   crtPower: number;
+  scanlinePower: number;
   paletteCycleSpeed: number;
   paletteCycleStep: number;
   ghostPower: number;
@@ -32,6 +41,11 @@ export interface EffectTuning {
   ditherSpeed: number;
   wavePower: number;
   waveSpeed: number;
+  chromaPower: number;
+  pixelSortPower: number;
+  noisePower: number;
+  vignettePower: number;
+  outlinePower: number;
 }
 
 export interface AnimationState {
@@ -74,6 +88,7 @@ export interface MaskState extends MaskConfig {
 
 export interface PresetStateV1 {
   pixelSize: number;
+  pixelizeAlgorithm: PixelizeAlgorithm;
   palette: string;
   paletteOverrides: Partial<Record<string, PaletteColor[]>>;
   effects: EffectsState;
@@ -113,6 +128,7 @@ export interface MaskSnapshot {
 
 export interface ProjectStateV1 {
   pixelSize: number;
+  pixelizeAlgorithm: PixelizeAlgorithm;
   palette: string;
   paletteOverrides: Partial<Record<string, PaletteColor[]>>;
   effects: EffectsState;
@@ -124,6 +140,7 @@ export interface ProjectStateV1 {
   selectedPresetId: string | null;
   batchNamingTemplate: string;
   performanceMode: boolean;
+  webglAcceleration?: boolean;
   effectPipelineOrder?: Array<keyof EffectsState>;
   animation?: AnimationState;
   gridSnapshot: PixelGridSnapshot | null;
