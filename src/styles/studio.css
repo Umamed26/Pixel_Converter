@@ -93,6 +93,9 @@ body {
   position: fixed;
   left: 16px;
   bottom: 52px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   z-index: 5;
 }
 

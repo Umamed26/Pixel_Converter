@@ -226,6 +226,7 @@ function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [docsOpen, setDocsOpen] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
+  const [pluginGuideOpen, setPluginGuideOpen] = useState(false);
   const [ghostOpen, setGhostOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [paletteEditorOpen, setPaletteEditorOpen] = useState(false);
@@ -263,6 +264,7 @@ function App() {
   const aboutRef = useRef<HTMLDialogElement>(null);
   const docsRef = useRef<HTMLDialogElement>(null);
   const changelogRef = useRef<HTMLDialogElement>(null);
+  const pluginGuideRef = useRef<HTMLDialogElement>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const paletteInputRef = useRef<HTMLInputElement>(null);
@@ -513,7 +515,8 @@ function App() {
     syncDialog(aboutRef.current, aboutOpen);
     syncDialog(docsRef.current, docsOpen);
     syncDialog(changelogRef.current, changelogOpen);
-  }, [aboutOpen, changelogOpen, docsOpen]);
+    syncDialog(pluginGuideRef.current, pluginGuideOpen);
+  }, [aboutOpen, changelogOpen, docsOpen, pluginGuideOpen]);
 
   useEffect(() => {
     if (!ghostOpen) {
@@ -773,6 +776,10 @@ function App() {
     setChangelogOpen((value) => !value);
   }, []);
 
+  const togglePluginGuideWindow = useCallback(() => {
+    setPluginGuideOpen((value) => !value);
+  }, []);
+
   const toggleGhostWindow = useCallback(() => {
     setGhostOpen((value) => !value);
   }, []);
@@ -792,23 +799,30 @@ function App() {
     setStartMenuOpen(false);
   }, []);
 
+  const openPluginGuideWindow = useCallback(() => {
+    setPluginGuideOpen(true);
+    setStartMenuOpen(false);
+  }, []);
+
   const taskWindowItems = useMemo(() => {
     return [
       { id: "about", label: t("taskReadme"), open: aboutOpen, onToggle: toggleAboutWindow },
       { id: "docs", label: t("docs"), open: docsOpen, onToggle: toggleDocsWindow },
       { id: "changelog", label: t("changelog"), open: changelogOpen, onToggle: toggleChangelogWindow },
+      { id: "plugin-guide", label: t("pluginGuideTitle"), open: pluginGuideOpen, onToggle: togglePluginGuideWindow },
       { id: "ghost", label: t("ghostTitle"), open: ghostOpen, onToggle: toggleGhostWindow },
     ];
-  }, [aboutOpen, changelogOpen, docsOpen, ghostOpen, t, toggleAboutWindow, toggleChangelogWindow, toggleDocsWindow, toggleGhostWindow]);
+  }, [aboutOpen, changelogOpen, docsOpen, ghostOpen, pluginGuideOpen, t, toggleAboutWindow, toggleChangelogWindow, toggleDocsWindow, toggleGhostWindow, togglePluginGuideWindow]);
 
   const startPinnedActions = useMemo(() => {
     return [
       { id: "about", label: t("taskReadme"), onClick: openAboutWindow },
       { id: "docs", label: t("docs"), onClick: openDocsWindow },
       { id: "changelog", label: t("changelog"), onClick: openChangelogWindow },
+      { id: "plugin-guide", label: t("pluginGuideTitle"), onClick: openPluginGuideWindow },
       { id: "ghost", label: t("ghostTitle"), onClick: toggleGhostWindow },
     ];
-  }, [openAboutWindow, openChangelogWindow, openDocsWindow, t, toggleGhostWindow]);
+  }, [openAboutWindow, openChangelogWindow, openDocsWindow, openPluginGuideWindow, t, toggleGhostWindow]);
 
   const startSystemActions = useMemo(() => {
     return [
@@ -884,6 +898,7 @@ function App() {
         onOpenAbout={openAboutWindow}
         onOpenDocs={openDocsWindow}
         onOpenChangelog={openChangelogWindow}
+        onOpenPluginGuide={openPluginGuideWindow}
       />
 
       <img className="desktop-ghost" src={mascotPixelbot} alt="" />
@@ -2614,6 +2629,30 @@ function App() {
         <article>{t("changelogText")}</article>
         <footer>
           <button type="button" className="retro-btn btn-mini" onClick={() => setChangelogOpen(false)}>
+            OK
+          </button>
+        </footer>
+      </dialog>
+
+      <dialog
+        ref={pluginGuideRef}
+        className="about-dialog"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) {
+            setPluginGuideOpen(false);
+          }
+        }}
+      >
+        <header>{t("pluginGuideTitle")}</header>
+        <article>{t("pluginGuideText")}</article>
+        <footer className="preset-actions">
+          <button type="button" className="retro-btn btn-mini" onClick={onOpenPluginImport}>
+            {t("pluginImport")}
+          </button>
+          <a className="retro-btn btn-mini" href="/plugin-template.mjs" target="_blank" rel="noreferrer">
+            {t("pluginTemplateDownload")}
+          </a>
+          <button type="button" className="retro-btn btn-mini" onClick={() => setPluginGuideOpen(false)}>
             OK
           </button>
         </footer>

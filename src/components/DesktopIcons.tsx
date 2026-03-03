@@ -4,6 +4,7 @@ interface DesktopIconsProps {
   onOpenAbout: () => void;
   onOpenDocs: () => void;
   onOpenChangelog: () => void;
+  onOpenPluginGuide: () => void;
 }
 
 /**
@@ -70,11 +71,35 @@ function TrashIcon() {
 }
 
 /**
+ * 插件图标。/ Icon for plugin guide shortcut.
+ * @returns SVG 图标节点 / SVG icon node.
+ */
+function PluginIcon() {
+  return (
+    <svg width="36" height="36" viewBox="0 0 36 36" shapeRendering="crispEdges" aria-hidden="true">
+      <rect x="8" y="4" width="20" height="28" fill="#f6f1df" />
+      <rect x="8" y="4" width="20" height="1" fill="#000" />
+      <rect x="8" y="4" width="1" height="28" fill="#000" />
+      <rect x="27" y="4" width="1" height="28" fill="#000" />
+      <rect x="8" y="31" width="20" height="1" fill="#000" />
+      <rect x="10" y="7" width="16" height="1" fill="#6c6c6c" />
+      <rect x="10" y="10" width="12" height="1" fill="#6c6c6c" />
+      <rect x="11" y="14" width="12" height="10" fill="#3a7dd3" />
+      <rect x="13" y="12" width="2" height="2" fill="#3a7dd3" />
+      <rect x="19" y="12" width="2" height="2" fill="#3a7dd3" />
+      <rect x="11" y="16" width="3" height="6" fill="#f5d76f" />
+      <rect x="20" y="16" width="3" height="6" fill="#f5d76f" />
+      <rect x="14" y="18" width="6" height="2" fill="#f5d76f" />
+    </svg>
+  );
+}
+
+/**
  * 渲染桌面快捷图标区域。/ Render desktop shortcut icon areas.
  * @param props 图标文案与事件回调 / Icon labels and callback handlers.
  * @returns 桌面图标节点 / Desktop icon JSX.
  */
-export function DesktopIcons({ t, onOpenAbout, onOpenDocs, onOpenChangelog }: DesktopIconsProps) {
+export function DesktopIcons({ t, onOpenAbout, onOpenDocs, onOpenChangelog, onOpenPluginGuide }: DesktopIconsProps) {
   return (
     <>
       <div className="desktop-icons-top">
@@ -92,6 +117,10 @@ export function DesktopIcons({ t, onOpenAbout, onOpenDocs, onOpenChangelog }: De
         <button className="desktop-icon" type="button" onDoubleClick={onOpenChangelog}>
           <TrashIcon />
           <span>{t("changelog")}</span>
+        </button>
+        <button className="desktop-icon" type="button" onDoubleClick={onOpenPluginGuide}>
+          <PluginIcon />
+          <span>{t("pluginGuideTitle")}</span>
         </button>
       </div>
     </>

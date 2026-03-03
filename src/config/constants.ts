@@ -428,6 +428,18 @@ const EN_STRINGS: Record<string, string> = {
   pluginRemove: "Remove",
   pluginEmpty: "No external plugins loaded",
   pluginStrength: "Strength",
+  pluginGuideTitle: "Plugin Guide",
+  pluginTemplateDownload: "Open Template",
+  pluginGuideText:
+    "How to use external plugins:\n" +
+    "1. Open Advanced mode.\n" +
+    "2. Go to Plugins panel and click Import Plugin.\n" +
+    "3. Import the template file from /plugin-template.mjs.\n" +
+    "4. Enable plugin and tune Strength.\n\n" +
+    "Plugin API:\n" +
+    "- window.PixelWorkshop.registerPlugin(plugin)\n" +
+    "- plugin fields: id, name, apply(ctx, canvas, context)\n" +
+    "- context: { timeMs, strength, grid, effects, effectTuning }",
   webglAcceleration: "WebGL Acceleration",
   webglUnsupported: "Unavailable",
   dialog: "Dialog",
@@ -694,6 +706,18 @@ const ZH_CN_STRINGS: Record<string, string> = {
   pluginRemove: "移除",
   pluginEmpty: "尚未加载外部插件",
   pluginStrength: "强度",
+  pluginGuideTitle: "插件教程",
+  pluginTemplateDownload: "打开模板",
+  pluginGuideText:
+    "外部插件使用步骤：\n" +
+    "1. 切到高级模式。\n" +
+    "2. 在插件面板点击“导入插件”。\n" +
+    "3. 选择 /plugin-template.mjs 模板文件。\n" +
+    "4. 启用插件并调节强度。\n\n" +
+    "插件 API：\n" +
+    "- window.PixelWorkshop.registerPlugin(plugin)\n" +
+    "- plugin 字段：id、name、apply(ctx, canvas, context)\n" +
+    "- context：{ timeMs, strength, grid, effects, effectTuning }",
   webglAcceleration: "WebGL 加速",
   webglUnsupported: "不可用",
   dialog: "对话框",
