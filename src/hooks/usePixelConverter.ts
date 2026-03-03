@@ -2292,6 +2292,11 @@ export function usePixelConverter(ghostSrc: string) {
    * @returns 是否导入成功 / Whether import succeeded.
    */
   const importExternalPlugin = useCallback(async (file: File) => {
+    if (!/\.(mjs|js)$/i.test(file.name)) {
+      setStatusKey("statusPluginError");
+      return false;
+    }
+
     let importedCount = 0;
     const hostApi: PluginHostPublicApi = {
       version: "1",
@@ -2315,20 +2320,87 @@ export function usePixelConverter(ghostSrc: string) {
     };
     pluginHostRef.current = hostApi;
 
-    const moduleUrl = URL.createObjectURL(new Blob([await file.text()], { type: "text/javascript" }));
-    try {
-      const module = await import(/* @vite-ignore */ moduleUrl);
-      if (typeof module.default === "function") {
-        await module.default(hostApi);
+    const applyModuleExports = async (module: Record<string, unknown>) => {
+      const defaultExport = module.default;
+      if (typeof defaultExport === "function") {
+        await defaultExport(hostApi);
+      } else if (defaultExport && typeof defaultExport === "object" && "apply" in defaultExport) {
+        hostApi.registerPlugin(defaultExport as ExternalPluginDefinition);
       }
-      if (module.plugin) {
+
+      if (module.plugin && typeof module.plugin === "object" && "apply" in module.plugin) {
         hostApi.registerPlugin(module.plugin as ExternalPluginDefinition);
       }
       if (Array.isArray(module.plugins)) {
-        for (const plugin of module.plugins as ExternalPluginDefinition[]) {
-          hostApi.registerPlugin(plugin);
+        for (const plugin of module.plugins) {
+          if (plugin && typeof plugin === "object" && "apply" in plugin) {
+            hostApi.registerPlugin(plugin as ExternalPluginDefinition);
+          }
         }
       }
+    };
+
+    const sourceText = await file.text();
+    const moduleBlobUrl = URL.createObjectURL(new Blob([sourceText], { type: "text/javascript" }));
+    const moduleCandidates = [
+      `data:text/javascript;charset=utf-8,${encodeURIComponent(sourceText)}`,
+      moduleBlobUrl,
+    ];
+    try {
+      for (const candidate of moduleCandidates) {
+        try {
+          const module = await import(/* @vite-ignore */ candidate);
+          await applyModuleExports(module as Record<string, unknown>);
+          if (importedCount > 0) {
+            break;
+          }
+        } catch {
+          // 尝试下一个候选导入通道。/ Try next import candidate.
+        }
+      }
+
+      // 回退解析：覆盖某些环境下 module import 被限制的场景。
+      // Fallback parser: covers environments that block module import.
+      if (importedCount === 0) {
+        try {
+          const transformed = sourceText
+            .replace(/^\s*export\s+default\s+/gm, "const __pixelWorkshopDefault = ")
+            .replace(/^\s*export\s+const\s+plugin\s*=\s*/gm, "const plugin = ")
+            .replace(/^\s*export\s+const\s+plugins\s*=\s*/gm, "const plugins = ")
+            .replace(/^\s*export\s+\{[^}]+\}\s*;?\s*$/gm, "");
+          const runFallback = new Function(
+            "host",
+            `
+              "use strict";
+              ${transformed}
+              if (typeof __pixelWorkshopDefault === "function") {
+                __pixelWorkshopDefault(host);
+              } else if (
+                typeof __pixelWorkshopDefault !== "undefined"
+                && __pixelWorkshopDefault
+                && typeof __pixelWorkshopDefault === "object"
+                && "apply" in __pixelWorkshopDefault
+              ) {
+                host.registerPlugin(__pixelWorkshopDefault);
+              }
+              if (typeof plugin !== "undefined" && plugin && typeof plugin === "object" && "apply" in plugin) {
+                host.registerPlugin(plugin);
+              }
+              if (typeof plugins !== "undefined" && Array.isArray(plugins)) {
+                for (const item of plugins) {
+                  if (item && typeof item === "object" && "apply" in item) {
+                    host.registerPlugin(item);
+                  }
+                }
+              }
+            `,
+          );
+          runFallback(hostApi);
+        } catch {
+          // 回退失败时保持统一错误状态。/ Keep unified error state on fallback failure.
+        }
+      }
+
       const success = importedCount > 0;
       setStatusKey(success ? "statusPluginImported" : "statusPluginError");
       return success;
@@ -2336,7 +2408,7 @@ export function usePixelConverter(ghostSrc: string) {
       setStatusKey("statusPluginError");
       return false;
     } finally {
-      URL.revokeObjectURL(moduleUrl);
+      URL.revokeObjectURL(moduleBlobUrl);
     }
   }, [externalPlugins, registerExternalPlugin, unregisterExternalPlugin]);
 

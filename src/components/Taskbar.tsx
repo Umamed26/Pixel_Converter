@@ -111,27 +111,13 @@ export function Taskbar({
   const toggleWindowFromTaskbar = (item: TaskWindowItem) => {
     onCloseStartMenu();
     setGroupMenuOpen(false);
-    if (!item.open) {
-      item.onToggle();
-      return;
+    const pendingTimer = minimizeTimersRef.current[item.id];
+    if (pendingTimer) {
+      window.clearTimeout(pendingTimer);
+      delete minimizeTimersRef.current[item.id];
     }
-
-    setMinimizingIds((previous) => {
-      if (previous.includes(item.id)) {
-        return previous;
-      }
-      const existingTimer = minimizeTimersRef.current[item.id];
-      if (existingTimer) {
-        window.clearTimeout(existingTimer);
-      }
-      const timeoutId = window.setTimeout(() => {
-        item.onToggle();
-        setMinimizingIds((current) => current.filter((entry) => entry !== item.id));
-        delete minimizeTimersRef.current[item.id];
-      }, 190);
-      minimizeTimersRef.current[item.id] = timeoutId;
-      return [...previous, item.id];
-    });
+    setMinimizingIds((previous) => previous.filter((entry) => entry !== item.id));
+    item.onToggle();
   };
 
   /**

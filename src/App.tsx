@@ -745,8 +745,15 @@ function App() {
       void onImportProject(projectFile);
       return;
     }
+    const pluginFile = files.find((file) => /\.(mjs|js)$/i.test(file.name));
+    if (pluginFile) {
+      event.preventDefault();
+      onDragLeave(event);
+      void importExternalPlugin(pluginFile);
+      return;
+    }
     onDrop(event);
-  }, [onDragLeave, onDrop, onImportProject]);
+  }, [importExternalPlugin, onDragLeave, onDrop, onImportProject]);
 
   const closeStartMenu = useCallback(() => {
     setStartMenuOpen(false);
@@ -2064,7 +2071,13 @@ function App() {
                   className={`preview-area ${isDragging ? "is-dragging" : ""}`}
                   tabIndex={0}
                   role="button"
-                  onClick={onPickFile}
+                  onClick={(event) => {
+                    const target = event.target as HTMLElement | null;
+                    if (target?.tagName === "INPUT") {
+                      return;
+                    }
+                    onPickFile();
+                  }}
                   onDrop={onPreviewDrop}
                   onDragEnter={onDragOver}
                   onDragOver={onDragOver}
@@ -2583,6 +2596,8 @@ function App() {
       <dialog
         ref={aboutRef}
         className="about-dialog"
+        onClose={() => setAboutOpen(false)}
+        onCancel={() => setAboutOpen(false)}
         onClick={(event) => {
           if (event.target === event.currentTarget) {
             setAboutOpen(false);
@@ -2601,6 +2616,8 @@ function App() {
       <dialog
         ref={docsRef}
         className="about-dialog"
+        onClose={() => setDocsOpen(false)}
+        onCancel={() => setDocsOpen(false)}
         onClick={(event) => {
           if (event.target === event.currentTarget) {
             setDocsOpen(false);
@@ -2619,6 +2636,8 @@ function App() {
       <dialog
         ref={changelogRef}
         className="about-dialog"
+        onClose={() => setChangelogOpen(false)}
+        onCancel={() => setChangelogOpen(false)}
         onClick={(event) => {
           if (event.target === event.currentTarget) {
             setChangelogOpen(false);
@@ -2637,6 +2656,8 @@ function App() {
       <dialog
         ref={pluginGuideRef}
         className="about-dialog"
+        onClose={() => setPluginGuideOpen(false)}
+        onCancel={() => setPluginGuideOpen(false)}
         onClick={(event) => {
           if (event.target === event.currentTarget) {
             setPluginGuideOpen(false);
