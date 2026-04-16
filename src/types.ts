@@ -1,0 +1,163 @@
+// 共享类型：定义领域模型与序列化结构。/ Shared types: domain models and serialization contracts.
+export type Lang = "zh-CN" | "en";
+
+export type PaletteColor = [number, number, number];
+
+export type PixelizeAlgorithm = "standard" | "edgeAware";
+
+export interface PixelGrid {
+  width: number;
+  height: number;
+  pixelSize: number;
+  indices: Uint16Array;
+  colors: PaletteColor[];
+}
+
+export interface EffectsState {
+  glitch: boolean;
+  crt: boolean;
+  scanlines: boolean;
+  paletteCycle: boolean;
+  ghost: boolean;
+  ditherFade: boolean;
+  waveWarp: boolean;
+  chromaShift: boolean;
+  pixelSort: boolean;
+  noise: boolean;
+  vignette: boolean;
+  outline: boolean;
+}
+
+export interface EffectTuning {
+  glitchPower: number;
+  glitchSpeed: number;
+  crtPower: number;
+  scanlinePower: number;
+  paletteCycleSpeed: number;
+  paletteCycleStep: number;
+  ghostPower: number;
+  ghostSpeed: number;
+  ditherPower: number;
+  ditherSpeed: number;
+  wavePower: number;
+  waveSpeed: number;
+  chromaPower: number;
+  pixelSortPower: number;
+  noisePower: number;
+  vignettePower: number;
+  outlinePower: number;
+}
+
+export interface AnimationState {
+  enabled: boolean;
+  playing: boolean;
+  loop: boolean;
+  durationMs: number;
+  progress: number;
+  startTuning: EffectTuning;
+  endTuning: EffectTuning;
+}
+
+export interface DialogState {
+  enabled: boolean;
+  style: "win95" | "terminal" | "dq" | "ff" | "retro" | "neon" | "stone" | "paper" | "void" | "aqua";
+  name: string;
+  text: string;
+  position: number;
+  page: number;
+  typingSpeed: number;
+  autoPage: boolean;
+  autoPageDelay: number;
+}
+
+export type MaskMode = "paint" | "erase";
+
+export interface MaskConfig {
+  enabled: boolean;
+  overlayVisible: boolean;
+  brushSize: number;
+  mode: MaskMode;
+  fxEnabled: Record<keyof EffectsState, boolean>;
+}
+
+export interface MaskState extends MaskConfig {
+  data: Uint8Array | null;
+  width: number;
+  height: number;
+}
+
+export interface PresetStateV1 {
+  pixelSize: number;
+  pixelizeAlgorithm: PixelizeAlgorithm;
+  palette: string;
+  paletteOverrides: Partial<Record<string, PaletteColor[]>>;
+  effects: EffectsState;
+  effectTuning: EffectTuning;
+  dialog: DialogState;
+  maskConfig: MaskConfig;
+}
+
+export interface PresetV1 {
+  version: 1;
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  state: PresetStateV1;
+}
+
+export interface PresetBundleV1 {
+  kind: "pixel-converter-presets";
+  version: 1;
+  presets: PresetV1[];
+}
+
+export interface PixelGridSnapshot {
+  width: number;
+  height: number;
+  pixelSize: number;
+  colors: PaletteColor[];
+  grid: string;
+}
+
+export interface MaskSnapshot {
+  width: number;
+  height: number;
+  dataBase64: string;
+}
+
+export interface ProjectStateV1 {
+  pixelSize: number;
+  pixelizeAlgorithm: PixelizeAlgorithm;
+  palette: string;
+  paletteOverrides: Partial<Record<string, PaletteColor[]>>;
+  effects: EffectsState;
+  effectTuning: EffectTuning;
+  dialog: DialogState;
+  maskConfig: MaskConfig;
+  maskSnapshot: MaskSnapshot | null;
+  presets: PresetV1[];
+  selectedPresetId: string | null;
+  batchNamingTemplate: string;
+  performanceMode: boolean;
+  webglAcceleration?: boolean;
+  effectPipelineOrder?: Array<keyof EffectsState>;
+  animation?: AnimationState;
+  gridSnapshot: PixelGridSnapshot | null;
+}
+
+export interface ProjectFileV1 {
+  kind: "pixel-converter-project";
+  version: 1;
+  exportedAt: string;
+  state: ProjectStateV1;
+}
+
+export interface BatchProgress {
+  total: number;
+  completed: number;
+  failed: number;
+  retries: number;
+  currentFile: string;
+  zipProgress: number;
+}
