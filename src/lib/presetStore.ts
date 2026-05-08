@@ -40,7 +40,30 @@ const EFFECT_KEYS: Array<keyof EffectsState> = [
   "noise",
   "vignette",
   "outline",
+  "ascii",
 ];
+
+const DEFAULT_EFFECT_TUNING: EffectTuning = {
+  glitchPower: 100,
+  glitchSpeed: 100,
+  crtPower: 100,
+  scanlinePower: 100,
+  paletteCycleSpeed: 100,
+  paletteCycleStep: 1,
+  ghostPower: 100,
+  ghostSpeed: 100,
+  ditherPower: 100,
+  ditherSpeed: 100,
+  wavePower: 100,
+  waveSpeed: 100,
+  chromaPower: 100,
+  pixelSortPower: 100,
+  noisePower: 100,
+  vignettePower: 100,
+  outlinePower: 100,
+  asciiPower: 100,
+  asciiDensity: 100,
+};
 
 /**
  * 判断值是否为普通对象。/ Check whether a value is a plain object.
@@ -116,10 +139,15 @@ function parseEffects(value: unknown): EffectsState | null {
   }
   const next = {} as EffectsState;
   for (const key of EFFECT_KEYS) {
-    if (!isBool(value[key])) {
+    const entry = value[key];
+    if (entry === undefined) {
+      next[key] = false;
+      continue;
+    }
+    if (!isBool(entry)) {
       return null;
     }
-    next[key] = value[key];
+    next[key] = entry;
   }
   return next;
 }
@@ -134,32 +162,18 @@ function parseEffectTuning(value: unknown): EffectTuning | null {
     return null;
   }
 
-  const keys: Array<keyof EffectTuning> = [
-    "glitchPower",
-    "glitchSpeed",
-    "crtPower",
-    "scanlinePower",
-    "paletteCycleSpeed",
-    "paletteCycleStep",
-    "ghostPower",
-    "ghostSpeed",
-    "ditherPower",
-    "ditherSpeed",
-    "wavePower",
-    "waveSpeed",
-    "chromaPower",
-    "pixelSortPower",
-    "noisePower",
-    "vignettePower",
-    "outlinePower",
-  ];
-
   const next = {} as EffectTuning;
+  const keys = Object.keys(DEFAULT_EFFECT_TUNING) as Array<keyof EffectTuning>;
   for (const key of keys) {
-    if (!isFiniteNumber(value[key])) {
+    const entry = value[key];
+    if (entry === undefined) {
+      next[key] = DEFAULT_EFFECT_TUNING[key];
+      continue;
+    }
+    if (!isFiniteNumber(entry)) {
       return null;
     }
-    next[key] = value[key];
+    next[key] = entry;
   }
   return next;
 }
@@ -223,6 +237,10 @@ function parseMaskConfig(value: unknown): MaskConfig | null {
   const fxEnabled = {} as Record<keyof EffectsState, boolean>;
   for (const key of EFFECT_KEYS) {
     const entry = value.fxEnabled[key];
+    if (entry === undefined) {
+      fxEnabled[key] = true;
+      continue;
+    }
     if (!isBool(entry)) {
       return null;
     }

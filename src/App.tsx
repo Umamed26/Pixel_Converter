@@ -1278,6 +1278,32 @@ function App() {
                       </label>
                     </div>
                   ) : null}
+
+                  {effects.ascii ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_ascii")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.asciiPower}%</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={effectTuning.asciiPower}
+                          onChange={(event) => patchEffectTuning({ asciiPower: Number(event.target.value) })}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("fxDensity")} {effectTuning.asciiDensity}%</span>
+                        <input
+                          type="range"
+                          min={50}
+                          max={200}
+                          value={effectTuning.asciiDensity}
+                          onChange={(event) => patchEffectTuning({ asciiDensity: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
                   </div>
                 ) : null}
               </div>

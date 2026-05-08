@@ -26,6 +26,7 @@ export interface EffectsState {
   noise: boolean;
   vignette: boolean;
   outline: boolean;
+  ascii: boolean;
 }
 
 export interface EffectTuning {
@@ -46,6 +47,8 @@ export interface EffectTuning {
   noisePower: number;
   vignettePower: number;
   outlinePower: number;
+  asciiPower: number;
+  asciiDensity: number;
 }
 
 export interface AnimationState {

@@ -1216,6 +1216,101 @@ function applyOutline(
   ctx.putImageData(imageData, 0, 0);
 }
 
+const ASCII_RAMP = " .:-=+*#%@";
+
+function rgbStyle(r: number, g: number, b: number): string {
+  return `rgb(${Math.round(clamp(r, 0, 255))},${Math.round(clamp(g, 0, 255))},${Math.round(clamp(b, 0, 255))})`;
+}
+
+/**
+ * ASCII 彩色字符格效果。/ Apply colored ASCII character grid effect.
+ * @param ctx 2D 绘图上下文 / 2D rendering context.
+ * @param width 画布宽度 / Canvas width.
+ * @param height 画布高度 / Canvas height.
+ * @param pixelSize 像素块尺寸 / Pixel block size.
+ * @param tuning 效果调参 / Effect tuning values.
+ * @returns 无返回值 / No return value.
+ */
+function applyAscii(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  pixelSize: number,
+  tuning: EffectTuning,
+): void {
+  const strength = clampPercent(tuning.asciiPower, 0, 100) / 100;
+  if (strength <= 0 || width <= 0 || height <= 0) {
+    return;
+  }
+
+  const density = clampPercent(tuning.asciiDensity, 50, 200) / 100;
+  const shortestSide = Math.max(1, Math.min(width, height));
+  const minCellSize = Math.min(shortestSide, Math.max(3, Math.floor(pixelSize / 2)));
+  const maxCellSize = Math.max(minCellSize, Math.min(Math.max(width, height), pixelSize * 4));
+  const cellSize = Math.round(clamp(Math.round(pixelSize / density), minCellSize, maxCellSize));
+  const fontSize = Math.max(3, Math.floor(cellSize * 0.86));
+  const before = ctx.getImageData(0, 0, width, height);
+  const source = new Uint8ClampedArray(before.data);
+
+  ctx.save();
+  ctx.clearRect(0, 0, width, height);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `${fontSize}px "Courier New", monospace`;
+
+  for (let y = 0; y < height; y += cellSize) {
+    const endY = Math.min(height, y + cellSize);
+    for (let x = 0; x < width; x += cellSize) {
+      const endX = Math.min(width, x + cellSize);
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let count = 0;
+
+      for (let sampleY = y; sampleY < endY; sampleY += 1) {
+        for (let sampleX = x; sampleX < endX; sampleX += 1) {
+          const offset = (sampleY * width + sampleX) * 4;
+          r += source[offset];
+          g += source[offset + 1];
+          b += source[offset + 2];
+          count += 1;
+        }
+      }
+
+      if (count === 0) {
+        continue;
+      }
+
+      const avgR = r / count;
+      const avgG = g / count;
+      const avgB = b / count;
+      const brightness = luma(avgR, avgG, avgB);
+      const rampIndex = Math.round(clamp((brightness / 255) * (ASCII_RAMP.length - 1), 0, ASCII_RAMP.length - 1));
+      const character = ASCII_RAMP[rampIndex];
+
+      ctx.fillStyle = rgbStyle(avgR * 0.18, avgG * 0.18, avgB * 0.18);
+      ctx.fillRect(x, y, endX - x, endY - y);
+      if (character !== " ") {
+        ctx.fillStyle = rgbStyle(avgR + (255 - avgR) * 0.18, avgG + (255 - avgG) * 0.18, avgB + (255 - avgB) * 0.18);
+        ctx.fillText(character, x + (endX - x) / 2, y + (endY - y) / 2);
+      }
+    }
+  }
+  ctx.restore();
+
+  if (strength < 1) {
+    const after = ctx.getImageData(0, 0, width, height);
+    const { data } = after;
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = Math.round(source[i] + (data[i] - source[i]) * strength);
+      data[i + 1] = Math.round(source[i + 1] + (data[i + 1] - source[i + 1]) * strength);
+      data[i + 2] = Math.round(source[i + 2] + (data[i + 2] - source[i + 2]) * strength);
+      data[i + 3] = Math.round(source[i + 3] + (data[i + 3] - source[i + 3]) * strength);
+    }
+    ctx.putImageData(after, 0, 0);
+  }
+}
+
 /**
  * 按宽度限制自动换行。/ Wrap plain text lines by maximum width.
  * @param ctx 2D 绘图上下文 / 2D rendering context.
@@ -1776,6 +1871,12 @@ export const DEFAULT_EFFECT_PLUGINS: EffectPlugin[] = [
     key: "outline",
     apply: (ctx, canvas, _grid, tuning) => {
       applyOutline(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "ascii",
+    apply: (ctx, canvas, grid, tuning) => {
+      applyAscii(ctx, canvas.width, canvas.height, grid.pixelSize, tuning);
     },
   },
   {

@@ -57,6 +57,7 @@ function defaultEffects(): EffectsState {
     noise: false,
     vignette: false,
     outline: false,
+    ascii: false,
   };
 }
 
@@ -79,6 +80,8 @@ function defaultTuning(): EffectTuning {
     noisePower: 100,
     vignettePower: 100,
     outlinePower: 100,
+    asciiPower: 100,
+    asciiDensity: 100,
   };
 }
 
@@ -119,6 +122,7 @@ function makeMask(grid: PixelGrid, fill = 0): MaskState {
       noise: true,
       vignette: true,
       outline: true,
+      ascii: true,
     },
     data,
     width: grid.width,
@@ -159,6 +163,7 @@ describe("renderFrame FX plugin registry", () => {
       "noise",
       "vignette",
       "outline",
+      "ascii",
       "glitch",
     ]);
   });
@@ -182,6 +187,7 @@ describe("renderFrame visual regression hash", () => {
       noise: true,
       vignette: true,
       outline: true,
+      ascii: true,
     };
     const maskedGlitch = makeMask(grid, 0);
     maskedGlitch.enabled = true;
@@ -200,6 +206,8 @@ describe("renderFrame visual regression hash", () => {
       none: renderHash(defaultEffects(), baseMask),
       crt: renderHash({ ...defaultEffects(), crt: true }, baseMask),
       glitch: renderHash({ ...defaultEffects(), glitch: true }, baseMask),
+      ascii: renderHash({ ...defaultEffects(), ascii: true }, baseMask),
+      maskedAscii: renderHash({ ...defaultEffects(), ascii: true }, maskedGlitch),
       cycleGhost: renderHash({ ...defaultEffects(), paletteCycle: true, ghost: true }, baseMask),
       all: renderHash(allFx, baseMask),
       allMaskedGlitch: renderHash(allFx, maskedGlitch),
@@ -207,11 +215,13 @@ describe("renderFrame visual regression hash", () => {
 
     expect(hashes).toMatchInlineSnapshot(`
       {
-        "all": "5b158434",
-        "allMaskedGlitch": "00694ad7",
+        "all": "712545fb",
+        "allMaskedGlitch": "331f0ebf",
+        "ascii": "b9245cd9",
         "crt": "7f0a92cd",
         "cycleGhost": "a1d7c055",
         "glitch": "3a3ca26d",
+        "maskedAscii": "e3792847",
         "none": "3beab2c5",
       }
     `);

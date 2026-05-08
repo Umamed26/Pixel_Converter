@@ -29,6 +29,7 @@ export const EFFECTS = [
   "noise",
   "vignette",
   "outline",
+  "ascii",
 ] as const;
 
 export const DIALOG_STYLES = ["win95", "terminal", "dq", "ff", "retro", "neon", "stone", "paper", "void", "aqua"] as const;
@@ -316,6 +317,7 @@ const EN_STRINGS: Record<string, string> = {
   fxPower: "Power",
   fxSpeed: "Speed",
   fxStep: "Step",
+  fxDensity: "Density",
   maskTitle: "Mask",
   maskEnable: "Enable Mask",
   maskPaint: "Paint",
@@ -523,6 +525,7 @@ const EN_STRINGS: Record<string, string> = {
   effect_noise: "Noise",
   effect_vignette: "Vignette",
   effect_outline: "Outline",
+  effect_ascii: "ASCII",
   edit: "Edit",
   pen: "Pen",
   eraser: "Eraser",
@@ -594,6 +597,7 @@ const ZH_CN_STRINGS: Record<string, string> = {
   fxPower: "强度",
   fxSpeed: "速度",
   fxStep: "步进",
+  fxDensity: "密度",
   maskTitle: "蒙版",
   maskEnable: "启用蒙版",
   maskPaint: "涂抹",
@@ -799,6 +803,7 @@ const ZH_CN_STRINGS: Record<string, string> = {
   effect_noise: "噪点",
   effect_vignette: "暗角",
   effect_outline: "轮廓",
+  effect_ascii: "ASCII",
   edit: "编辑",
   pen: "画笔",
   eraser: "橡皮擦",

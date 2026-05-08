@@ -464,6 +464,7 @@ function defaultEffects(): EffectsState {
     noise: false,
     vignette: false,
     outline: false,
+    ascii: false,
   };
 }
 
@@ -508,6 +509,8 @@ function defaultEffectTuning(): EffectTuning {
     noisePower: 100,
     vignettePower: 100,
     outlinePower: 100,
+    asciiPower: 100,
+    asciiDensity: 100,
   };
 }
 
@@ -575,6 +578,8 @@ function interpolateEffectTuning(from: EffectTuning, to: EffectTuning, progress:
     noisePower: lerp(from.noisePower, to.noisePower, t),
     vignettePower: lerp(from.vignettePower, to.vignettePower, t),
     outlinePower: lerp(from.outlinePower, to.outlinePower, t),
+    asciiPower: lerp(from.asciiPower, to.asciiPower, t),
+    asciiDensity: lerp(from.asciiDensity, to.asciiDensity, t),
   };
 }
 
@@ -623,7 +628,7 @@ function copyMaskConfig(mask: MaskConfig): MaskConfig {
     overlayVisible: mask.overlayVisible,
     brushSize: mask.brushSize,
     mode: mask.mode,
-    fxEnabled: { ...mask.fxEnabled },
+    fxEnabled: { ...defaultMaskFxEnabled(), ...mask.fxEnabled },
   };
 }
 
@@ -920,6 +925,8 @@ function sanitizeEffectTuning(value: unknown): EffectTuning {
     noisePower: asFiniteNumber(record.noisePower, seed.noisePower),
     vignettePower: asFiniteNumber(record.vignettePower, seed.vignettePower),
     outlinePower: asFiniteNumber(record.outlinePower, seed.outlinePower),
+    asciiPower: clamp(asFiniteNumber(record.asciiPower, seed.asciiPower), 0, 100),
+    asciiDensity: clamp(asFiniteNumber(record.asciiDensity, seed.asciiDensity), 50, 200),
   };
 }
 
@@ -2175,13 +2182,13 @@ export function usePixelConverter(ghostSrc: string) {
       setPalette(resolvedPalette);
     }
     setPaletteOverrides(nextPaletteOverrides);
-    setEffects({ ...state.effects });
-    setEffectTuning({ ...state.effectTuning });
+    setEffects(sanitizeEffectsState(state.effects));
+    setEffectTuning(sanitizeEffectTuning(state.effectTuning));
     setDialog({ ...state.dialog });
 
     const width = grid?.width ?? 0;
     const height = grid?.height ?? 0;
-    setMask(createMaskStateFromConfig(state.maskConfig, width, height));
+    setMask(createMaskStateFromConfig(sanitizeMaskConfig(state.maskConfig), width, height));
 
     revealCountRef.current = 0;
     pageRevealFinishedAtRef.current = null;
@@ -3184,8 +3191,8 @@ export function usePixelConverter(ghostSrc: string) {
       setPalette(resolvedPalette);
     }
     setPaletteOverrides(nextPaletteOverrides);
-    setEffects({ ...state.effects });
-    setEffectTuning({ ...state.effectTuning });
+    setEffects(sanitizeEffectsState(state.effects));
+    setEffectTuning(sanitizeEffectTuning(state.effectTuning));
     setDialog({ ...state.dialog });
     setBatchNamingTemplate(typeof state.batchNamingTemplate === "string" ? state.batchNamingTemplate : defaultBatchNamingTemplate());
     setPerformanceMode(Boolean(state.performanceMode));
@@ -3201,8 +3208,8 @@ export function usePixelConverter(ghostSrc: string) {
       const raw = state.animation as Partial<AnimationState>;
       const durationMs = clamp(Math.round(Number(raw.durationMs ?? 2600)), 300, 15000);
       const progress = clamp(Number(raw.progress ?? 0), 0, 1);
-      const startTuning = raw.startTuning ? { ...defaultEffectTuning(), ...raw.startTuning } : defaultEffectTuning();
-      const endTuning = raw.endTuning ? { ...defaultEffectTuning(), ...raw.endTuning } : defaultEffectTuning();
+      const startTuning = sanitizeEffectTuning(raw.startTuning);
+      const endTuning = sanitizeEffectTuning(raw.endTuning);
       setAnimation({
         enabled: Boolean(raw.enabled),
         playing: false,
@@ -3223,7 +3230,7 @@ export function usePixelConverter(ghostSrc: string) {
     setGrid(importedGrid);
 
     const nextMask = createMaskStateFromConfig(
-      state.maskConfig,
+      sanitizeMaskConfig(state.maskConfig),
       importedGrid?.width ?? 0,
       importedGrid?.height ?? 0,
     );
