@@ -3402,7 +3402,13 @@ export function usePixelConverter(ghostSrc: string) {
     dirtyRef.current = true;
     try {
       const stream = canvas.captureStream(10);
-      const mimeType = MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "video/webm";
+      const supportedMimeTypes = [
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm",
+        "video/mp4",
+      ].filter((type) => MediaRecorder.isTypeSupported(type));
+      const mimeType = supportedMimeTypes.length > 0 ? supportedMimeTypes[0] : "video/webm";
       const ext = mimeType.includes("mp4") ? "mp4" : "webm";
       const chunks: BlobPart[] = [];
       const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 12_000_000 });
@@ -3425,6 +3431,9 @@ export function usePixelConverter(ghostSrc: string) {
       });
 
       stream.getTracks().forEach((track) => track.stop());
+      if (chunks.length === 0) {
+        throw new Error("No video data was recorded");
+      }
       const blob = new Blob(chunks, { type: mimeType });
       downloadBlobAsFile(blob, `pixel-art.${ext}`);
     } finally {
@@ -3497,7 +3506,7 @@ export function usePixelConverter(ghostSrc: string) {
     if (!exported) {
       return;
     }
-    const encoder = GIFEncoder({ auto: false });
+    const encoder = GIFEncoder();
     const repeat = exportLoopCount < 0 ? 0 : exportLoopCount;
     for (let i = 0; i < exported.frames.length; i += 1) {
       const frame = exported.frames[i];
@@ -3510,15 +3519,16 @@ export function usePixelConverter(ghostSrc: string) {
       const indexed = applyPalette(data, paletteData, "rgb565");
       encoder.writeFrame(indexed, exported.width, exported.height, {
         palette: paletteData,
-        delay: Math.max(2, Math.round(exported.delayMs / 10)),
+        delay: exported.delayMs,
         repeat,
-        first: i === 0,
       });
     }
     encoder.finish();
-    const bytes = encoder.bytesView();
-    const normalizedBytes = new Uint8Array(bytes);
-    downloadBlobFile(new Blob([normalizedBytes], { type: "image/gif" }), "pixel-art.gif");
+    const bytes = encoder.bytes();
+    if (bytes.length === 0) {
+      return;
+    }
+    downloadBlobFile(new Blob([bytes], { type: "image/gif" }), "pixel-art.gif");
     setStatusKey("statusExportGifDone");
   }, [createAnimatedExportFrames, downloadBlobFile, exportLoopCount, gifFps, isRecording]);
 
