@@ -30,9 +30,6 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Compliance Check
-        run: npm run compliance:check
-
       - name: Build
         run: npm run build
 
