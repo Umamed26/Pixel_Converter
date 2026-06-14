@@ -2805,7 +2805,6 @@ export function usePixelConverter(ghostSrc: string) {
       mask.enabled ? 1 : 0,
       mask.mode,
       mask.brushSize,
-      webglAcceleration ? 1 : 0,
       pluginCacheKey,
     ].join("|");
     const cached = exportFrameCacheRef.current.get(cacheKey);
@@ -2825,7 +2824,11 @@ export function usePixelConverter(ghostSrc: string) {
       ghostRef.current,
       timeMs,
       effectPlugins,
-      webglAcceleration && webglSupported,
+      // 导出走 CPU 渲染：每帧都会新建一个临时 canvas，若启用 WebGL 会为每帧创建
+      // 一个永不复用的 WebGL 上下文（WeakMap 以 canvas 为 key），很快触及浏览器
+      // 上下文上限导致后续帧底图渲染静默失效（表现为整帧灰色噪点）。
+      // Force CPU rendering for export to avoid leaking one WebGL context per frame.
+      false,
     );
     applyExternalPluginsToCanvas(tempCanvas, timeMs, inputGrid, resolvedTuning);
     const scaled = scaleCanvasForExport(tempCanvas, 1200);
@@ -2837,7 +2840,7 @@ export function usePixelConverter(ghostSrc: string) {
       }
     }
     return scaled;
-  }, [applyExternalPluginsToCanvas, dialog.enabled, dialog.style, effectPipelineOrder, effectPlugins, effectTuning, effects, externalPlugins, getGridCacheId, mask, renderDialogForFrame, webglAcceleration, webglSupported]);
+  }, [applyExternalPluginsToCanvas, dialog.enabled, dialog.style, effectPipelineOrder, effectPlugins, effectTuning, effects, externalPlugins, getGridCacheId, mask, renderDialogForFrame]);
 
   const processBatchFiles = useCallback(async (files: File[]) => {
     if (files.length === 0 || isBatchProcessing) {
