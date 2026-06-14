@@ -3,7 +3,7 @@ export type Lang = "zh-CN" | "en";
 
 export type PaletteColor = [number, number, number];
 
-export type PixelizeAlgorithm = "standard" | "edgeAware";
+export type PixelizeAlgorithm = "standard" | "edgeAware" | "orderedDither" | "floydSteinberg";
 
 export interface PixelGrid {
   width: number;
@@ -14,6 +14,12 @@ export interface PixelGrid {
 }
 
 export interface EffectsState {
+  invert: boolean;
+  sepia: boolean;
+  hueRotate: boolean;
+  posterize: boolean;
+  colorTemp: boolean;
+  saturation: boolean;
   glitch: boolean;
   crt: boolean;
   scanlines: boolean;
@@ -26,10 +32,27 @@ export interface EffectsState {
   noise: boolean;
   vignette: boolean;
   outline: boolean;
+  halftone: boolean;
+  crosshatch: boolean;
+  emboss: boolean;
+  sharpen: boolean;
+  mirror: boolean;
+  swirl: boolean;
+  fisheye: boolean;
+  jitter: boolean;
+  ps1Dither: boolean;
+  ps2Bloom: boolean;
   ascii: boolean;
 }
 
 export interface EffectTuning {
+  invertPower: number;
+  sepiaPower: number;
+  hueRotatePower: number;
+  hueRotateSpeed: number;
+  posterizePower: number;
+  colorTempPower: number;
+  saturationPower: number;
   glitchPower: number;
   glitchSpeed: number;
   crtPower: number;
@@ -47,8 +70,21 @@ export interface EffectTuning {
   noisePower: number;
   vignettePower: number;
   outlinePower: number;
+  halftonePower: number;
+  crosshatchPower: number;
+  embossPower: number;
+  sharpenPower: number;
+  mirrorPower: number;
+  swirlPower: number;
+  swirlSpeed: number;
+  fisheyePower: number;
+  jitterPower: number;
+  jitterSpeed: number;
+  ps1DitherPower: number;
+  ps2BloomPower: number;
   asciiPower: number;
   asciiDensity: number;
+  asciiStyle: number;
 }
 
 export interface AnimationState {

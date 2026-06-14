@@ -620,8 +620,379 @@ function applyEffectWithOptionalMask(
   ctx.putImageData(after, 0, 0);
 }
 
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return [h, s, l];
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+  const hue2rgb = (p: number, q: number, t: number) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [
+    Math.round(hue2rgb(p, q, h + 1/3) * 255),
+    Math.round(hue2rgb(p, q, h) * 255),
+    Math.round(hue2rgb(p, q, h - 1/3) * 255),
+  ];
+}
+
+function applyKernel3x3(
+  src: Uint8ClampedArray, dst: Uint8ClampedArray,
+  w: number, h: number, kernel: number[], bias: number, strength: number,
+): void {
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const idx = (y * w + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            sum += src[((y + ky) * w + (x + kx)) * 4 + c] * kernel[(ky + 1) * 3 + (kx + 1)];
+          }
+        }
+        const v = clamp(sum + bias, 0, 255);
+        dst[idx + c] = Math.round(src[idx + c] * (1 - strength) + v * strength);
+      }
+      dst[idx + 3] = src[idx + 3];
+    }
+  }
+}
+
+function applyInvert(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.invertPower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const s = Math.min(strength, 1);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = Math.round(data[i] * (1 - s) + (255 - data[i]) * s);
+    data[i + 1] = Math.round(data[i + 1] * (1 - s) + (255 - data[i + 1]) * s);
+    data[i + 2] = Math.round(data[i + 2] * (1 - s) + (255 - data[i + 2]) * s);
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applySepia(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.sepiaPower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const s = Math.min(strength, 1);
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const sr = Math.min(255, r * 0.393 + g * 0.769 + b * 0.189);
+    const sg = Math.min(255, r * 0.349 + g * 0.686 + b * 0.168);
+    const sb = Math.min(255, r * 0.272 + g * 0.534 + b * 0.131);
+    data[i] = Math.round(r * (1 - s) + sr * s);
+    data[i + 1] = Math.round(g * (1 - s) + sg * s);
+    data[i + 2] = Math.round(b * (1 - s) + sb * s);
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applyHueRotate(ctx: CanvasRenderingContext2D, width: number, height: number, baseTick: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.hueRotatePower);
+  if (strength <= 0) return;
+  const tick = scaleTick(baseTick, tuning.hueRotateSpeed);
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const rotation = (tick * 0.02 * strength) % 1;
+  for (let i = 0; i < data.length; i += 4) {
+    const [h, s, l] = rgbToHsl(data[i], data[i + 1], data[i + 2]);
+    const [r, g, b] = hslToRgb((h + rotation) % 1, s, l);
+    data[i] = r; data[i + 1] = g; data[i + 2] = b;
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applyPosterize(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.posterizePower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const levels = Math.max(2, Math.round(16 - Math.min(strength, 1) * 12));
+  const step = 255 / (levels - 1);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = Math.round(Math.round(data[i] / step) * step);
+    data[i + 1] = Math.round(Math.round(data[i + 1] / step) * step);
+    data[i + 2] = Math.round(Math.round(data[i + 2] / step) * step);
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applyColorTemp(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.colorTempPower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const shift = (strength - 1.0) * 40;
+  if (Math.abs(shift) < 0.5) return;
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = clamp(data[i] + shift, 0, 255);
+    data[i + 1] = clamp(data[i + 1] + shift * 0.1, 0, 255);
+    data[i + 2] = clamp(data[i + 2] - shift, 0, 255);
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applySaturation(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const factor = tuning.saturationPower / 100;
+  if (Math.abs(factor - 1) < 0.01) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722;
+    data[i] = clamp(Math.round(gray + (data[i] - gray) * factor), 0, 255);
+    data[i + 1] = clamp(Math.round(gray + (data[i + 1] - gray) * factor), 0, 255);
+    data[i + 2] = clamp(Math.round(gray + (data[i + 2] - gray) * factor), 0, 255);
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applyHalftone(ctx: CanvasRenderingContext2D, width: number, height: number, pixelSize: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.halftonePower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = new Uint8ClampedArray(imageData.data);
+  const { data } = imageData;
+  const cellSize = Math.max(4, pixelSize * 2);
+  const s = Math.min(strength, 1);
+  for (let cy = 0; cy < height; cy += cellSize) {
+    for (let cx = 0; cx < width; cx += cellSize) {
+      let totalR = 0, totalG = 0, totalB = 0, totalBright = 0, count = 0;
+      for (let dy = 0; dy < cellSize && cy + dy < height; dy++) {
+        for (let dx = 0; dx < cellSize && cx + dx < width; dx++) {
+          const idx = ((cy + dy) * width + (cx + dx)) * 4;
+          totalR += src[idx]; totalG += src[idx + 1]; totalB += src[idx + 2];
+          totalBright += (src[idx] + src[idx + 1] + src[idx + 2]) / 3;
+          count++;
+        }
+      }
+      const avgR = totalR / count, avgG = totalG / count, avgB = totalB / count;
+      const avgBright = totalBright / count;
+      const radius = (1 - avgBright / 255) * cellSize * 0.55;
+      const centerX = cx + cellSize / 2, centerY = cy + cellSize / 2;
+      for (let dy = 0; dy < cellSize && cy + dy < height; dy++) {
+        for (let dx = 0; dx < cellSize && cx + dx < width; dx++) {
+          const px = cx + dx, py = cy + dy;
+          const idx = (py * width + px) * 4;
+          const dist = Math.hypot(px - centerX, py - centerY);
+          if (dist < radius) {
+            data[idx] = Math.round(src[idx] * (1 - s) + avgR * 0.85 * s);
+            data[idx + 1] = Math.round(src[idx + 1] * (1 - s) + avgG * 0.85 * s);
+            data[idx + 2] = Math.round(src[idx + 2] * (1 - s) + avgB * 0.85 * s);
+          } else {
+            data[idx] = Math.round(src[idx] * (1 - s) + 245 * s);
+            data[idx + 1] = Math.round(src[idx + 1] * (1 - s) + 245 * s);
+            data[idx + 2] = Math.round(src[idx + 2] * (1 - s) + 245 * s);
+          }
+        }
+      }
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applyCrosshatch(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.crosshatchPower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = new Uint8ClampedArray(imageData.data);
+  const { data } = imageData;
+  const s = Math.min(strength, 1);
+  const spacing = Math.max(3, Math.round(width / 80));
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const bright = (src[idx] + src[idx + 1] + src[idx + 2]) / (3 * 255);
+      let ink = 0;
+      if (bright < 0.8) {
+        if ((x + y) % spacing === 0) ink += 0.35;
+      }
+      if (bright < 0.55) {
+        if ((x - y + spacing * 100) % spacing === 0) ink += 0.35;
+      }
+      if (bright < 0.3) {
+        if ((x + y + Math.floor(spacing / 2)) % spacing === 0) ink += 0.3;
+      }
+      if (bright < 0.15) {
+        ink += 0.2;
+      }
+      ink = Math.min(ink, 1);
+      const factor = 1 - ink * s;
+      data[idx] = Math.round(src[idx] * factor);
+      data[idx + 1] = Math.round(src[idx + 1] * factor);
+      data[idx + 2] = Math.round(src[idx + 2] * factor);
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applyEmboss(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.embossPower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = new Uint8ClampedArray(imageData.data);
+  const { data } = imageData;
+  const s = Math.min(strength, 1);
+  const kernel = [-2, -1, 0, -1, 0, 1, 0, 1, 2];
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const idx = (y * width + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            sum += src[((y + ky) * width + (x + kx)) * 4 + c] * kernel[(ky + 1) * 3 + (kx + 1)];
+          }
+        }
+        const embossed = clamp(sum * 1.2 + 128, 0, 255);
+        data[idx + c] = Math.round(src[idx + c] * (1 - s) + embossed * s);
+      }
+      data[idx + 3] = src[idx + 3];
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applySharpen(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.sharpenPower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = new Uint8ClampedArray(imageData.data);
+  const kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+  applyKernel3x3(src, imageData.data, width, height, kernel, 0, Math.min(strength, 1));
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applyMirrorEffect(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.mirrorPower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = new Uint8ClampedArray(imageData.data);
+  const { data } = imageData;
+  const s = Math.min(strength, 1);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const mirrorX = width - 1 - x;
+      const mIdx = (y * width + mirrorX) * 4;
+      data[idx] = Math.round(src[idx] * (1 - s) + src[mIdx] * s);
+      data[idx + 1] = Math.round(src[idx + 1] * (1 - s) + src[mIdx + 1] * s);
+      data[idx + 2] = Math.round(src[idx + 2] * (1 - s) + src[mIdx + 2] * s);
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applySwirl(ctx: CanvasRenderingContext2D, width: number, height: number, baseTick: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.swirlPower);
+  if (strength <= 0) return;
+  const tick = scaleTick(baseTick, tuning.swirlSpeed);
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = new Uint8ClampedArray(imageData.data);
+  const { data } = imageData;
+  const cx = width / 2, cy = height / 2;
+  const maxDist = Math.hypot(cx, cy);
+  const maxAngle = strength * Math.PI * 2;
+  const phase = tick * 0.015;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const dx = x - cx, dy = y - cy;
+      const dist = Math.hypot(dx, dy);
+      const factor = 1 - dist / maxDist;
+      const angle = factor * factor * maxAngle + phase;
+      const cos = Math.cos(angle), sin = Math.sin(angle);
+      const srcX = clamp(Math.round(cx + dx * cos - dy * sin), 0, width - 1);
+      const srcY = clamp(Math.round(cy + dx * sin + dy * cos), 0, height - 1);
+      const idx = (y * width + x) * 4;
+      const sIdx = (srcY * width + srcX) * 4;
+      data[idx] = src[sIdx];
+      data[idx + 1] = src[sIdx + 1];
+      data[idx + 2] = src[sIdx + 2];
+      data[idx + 3] = src[sIdx + 3];
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applyFisheye(ctx: CanvasRenderingContext2D, width: number, height: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.fisheyePower);
+  if (strength <= 0) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = new Uint8ClampedArray(imageData.data);
+  const { data } = imageData;
+  const cx = width / 2, cy = height / 2;
+  const maxR = Math.min(cx, cy);
+  const power = 1 + strength * 0.8;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const dx = (x - cx) / maxR, dy = (y - cy) / maxR;
+      const r = Math.hypot(dx, dy);
+      const idx = (y * width + x) * 4;
+      if (r <= 0.001) continue;
+      const fade = r < 0.85 ? 1 : clamp((1.15 - r) / 0.3, 0, 1);
+      const nr = Math.pow(Math.min(r, 1.5), power) / r;
+      const srcX = clamp(Math.round(cx + dx * nr * maxR), 0, width - 1);
+      const srcY = clamp(Math.round(cy + dy * nr * maxR), 0, height - 1);
+      const sIdx = (srcY * width + srcX) * 4;
+      data[idx] = Math.round(src[idx] * (1 - fade) + src[sIdx] * fade);
+      data[idx + 1] = Math.round(src[idx + 1] * (1 - fade) + src[sIdx + 1] * fade);
+      data[idx + 2] = Math.round(src[idx + 2] * (1 - fade) + src[sIdx + 2] * fade);
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function applyJitter(ctx: CanvasRenderingContext2D, width: number, height: number, baseTick: number, tuning: EffectTuning): void {
+  const strength = toStrength(tuning.jitterPower);
+  if (strength <= 0) return;
+  const tick = scaleTick(baseTick, tuning.jitterSpeed);
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = new Uint8ClampedArray(imageData.data);
+  const { data } = imageData;
+  const random = createSeededRandom((tick + 1) * 2654435761 + width * 7);
+  const maxOffset = Math.max(1, Math.round(6 * strength));
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const ox = Math.round((random() - 0.5) * 2 * maxOffset);
+      const oy = Math.round((random() - 0.5) * 2 * maxOffset);
+      const srcX = clamp(x + ox, 0, width - 1);
+      const srcY = clamp(y + oy, 0, height - 1);
+      const idx = (y * width + x) * 4;
+      const sIdx = (srcY * width + srcX) * 4;
+      data[idx] = src[sIdx];
+      data[idx + 1] = src[sIdx + 1];
+      data[idx + 2] = src[sIdx + 2];
+      data[idx + 3] = src[sIdx + 3];
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+
+
+
+
+
+
 /**
- * 故障条纹效果（通道错位 + 行偏移）。/ Apply glitch effect (channel shift + scanline offsets).
  * @param ctx 2D 绘图上下文 / 2D rendering context.
  * @param width 画布宽度 / Canvas width.
  * @param height 画布高度 / Canvas height.
@@ -1216,7 +1587,369 @@ function applyOutline(
   ctx.putImageData(imageData, 0, 0);
 }
 
-const ASCII_RAMP = " .:-=+*#%@";
+const BAYER_4X4 = [
+  0, 8, 2, 10,
+  12, 4, 14, 6,
+  3, 11, 1, 9,
+  15, 7, 13, 5,
+] as const;
+
+function quantizeChannelWithDither(value: number, threshold: number, levels: number): number {
+  const normalized = clamp(value / 255 + threshold, 0, 1);
+  return Math.round(normalized * (levels - 1)) * (255 / (levels - 1));
+}
+
+function softenRgbaSource(source: Uint8ClampedArray, width: number, height: number, mix: number): Uint8ClampedArray {
+  const output = new Uint8ClampedArray(source);
+  if (mix <= 0 || width <= 1 || height <= 1) {
+    return output;
+  }
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let weightTotal = 0;
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        const sampleY = clamp(y + offsetY, 0, height - 1);
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          const sampleX = clamp(x + offsetX, 0, width - 1);
+          const weight = offsetX === 0 && offsetY === 0 ? 4 : offsetX === 0 || offsetY === 0 ? 2 : 1;
+          const idx = (sampleY * width + sampleX) * 4;
+          r += source[idx] * weight;
+          g += source[idx + 1] * weight;
+          b += source[idx + 2] * weight;
+          weightTotal += weight;
+        }
+      }
+
+      const idx = (y * width + x) * 4;
+      output[idx] = Math.round(source[idx] + (r / weightTotal - source[idx]) * mix);
+      output[idx + 1] = Math.round(source[idx + 1] + (g / weightTotal - source[idx + 1]) * mix);
+      output[idx + 2] = Math.round(source[idx + 2] + (b / weightTotal - source[idx + 2]) * mix);
+    }
+  }
+
+  return output;
+}
+
+/**
+ * PS1-style ordered dithering and color precision crush.
+ */
+function applyPs1Dither(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  tuning: EffectTuning,
+): void {
+  const strength = toStrength(tuning.ps1DitherPower);
+  if (strength <= 0) {
+    return;
+  }
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const source = new Uint8ClampedArray(data);
+  const cappedStrength = clamp(strength, 0, 2.2);
+  const softened = softenRgbaSource(source, width, height, clamp(0.16 + cappedStrength * 0.12, 0, 0.42));
+  const blend = clamp(0.25 + cappedStrength * 0.68, 0, 1);
+  const levels = Math.max(4, Math.round(24 - cappedStrength * 10));
+  const ditherAmount = 0.035 + 0.075 * cappedStrength;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = (y * width + x) * 4;
+      const brightness = luma(softened[idx], softened[idx + 1], softened[idx + 2]) / 255;
+      const bayer = BAYER_4X4[(y % 4) * 4 + (x % 4)] / 15 - 0.5;
+      const lumaScale = 0.75 + (1 - brightness) * 0.9;
+      const threshold = bayer * ditherAmount * lumaScale;
+      const r = quantizeChannelWithDither(softened[idx], threshold, levels);
+      const g = quantizeChannelWithDither(softened[idx + 1], threshold, levels);
+      const b = quantizeChannelWithDither(softened[idx + 2], threshold, levels);
+
+      data[idx] = Math.round(source[idx] + (r - source[idx]) * blend);
+      data[idx + 1] = Math.round(source[idx + 1] + (g - source[idx + 1]) * blend);
+      data[idx + 2] = Math.round(source[idx + 2] + (b - source[idx + 2]) * blend);
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function blurBrightPassHorizontal(source: Float32Array, width: number, height: number, radius: number): Float32Array {
+  const output = new Float32Array(source.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let count = 0;
+      for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+        const sampleX = clamp(x + offsetX, 0, width - 1);
+        const idx = (y * width + sampleX) * 3;
+        r += source[idx];
+        g += source[idx + 1];
+        b += source[idx + 2];
+        count += 1;
+      }
+      const outIdx = (y * width + x) * 3;
+      output[outIdx] = r / count;
+      output[outIdx + 1] = g / count;
+      output[outIdx + 2] = b / count;
+    }
+  }
+  return output;
+}
+
+function blurBrightPassVertical(source: Float32Array, width: number, height: number, radius: number): Float32Array {
+  const output = new Float32Array(source.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let count = 0;
+      for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+        const sampleY = clamp(y + offsetY, 0, height - 1);
+        const idx = (sampleY * width + x) * 3;
+        r += source[idx];
+        g += source[idx + 1];
+        b += source[idx + 2];
+        count += 1;
+      }
+      const outIdx = (y * width + x) * 3;
+      output[outIdx] = r / count;
+      output[outIdx + 1] = g / count;
+      output[outIdx + 2] = b / count;
+    }
+  }
+  return output;
+}
+
+/**
+ * PS2-style soft bloom using CPU bright extraction and separable blur.
+ */
+function applyPs2Bloom(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  tuning: EffectTuning,
+): void {
+  const strength = toStrength(tuning.ps2BloomPower);
+  if (strength <= 0 || width <= 0 || height <= 0) {
+    return;
+  }
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const bright = new Float32Array(width * height * 3);
+  const cappedStrength = clamp(strength, 0, 2.2);
+  const threshold = 238 - cappedStrength * 34;
+  const softKnee = 48 + cappedStrength * 14;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const pixel = i / 4;
+    const brightness = luma(data[i], data[i + 1], data[i + 2]);
+    const bloomWeight = Math.pow(clamp((brightness - threshold) / softKnee, 0, 1), 1.25);
+    const outIdx = pixel * 3;
+    bright[outIdx] = data[i] * bloomWeight * 0.62;
+    bright[outIdx + 1] = data[i + 1] * bloomWeight * 0.62;
+    bright[outIdx + 2] = data[i + 2] * bloomWeight * 0.62;
+  }
+
+  const radius = Math.max(2, Math.round(2 + cappedStrength * 1.6));
+  const horizontal = blurBrightPassHorizontal(bright, width, height, radius);
+  const blurred = blurBrightPassVertical(horizontal, width, height, radius);
+  const intensity = 0.18 + cappedStrength * 0.24;
+  const maxChannelLift = 18 + cappedStrength * 24;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const bloomIdx = (i / 4) * 3;
+    const redHeadroom = clamp(1 - data[i] / 288, 0.12, 1);
+    const greenHeadroom = clamp(1 - data[i + 1] / 288, 0.12, 1);
+    const blueHeadroom = clamp(1 - data[i + 2] / 288, 0.12, 1);
+    const redLift = Math.min(maxChannelLift, blurred[bloomIdx] * intensity * redHeadroom);
+    const greenLift = Math.min(maxChannelLift, blurred[bloomIdx + 1] * intensity * greenHeadroom);
+    const blueLift = Math.min(maxChannelLift, blurred[bloomIdx + 2] * intensity * blueHeadroom);
+    data[i] = Math.round(clamp(data[i] + redLift, 0, 255));
+    data[i + 1] = Math.round(clamp(data[i + 1] + greenLift, 0, 255));
+    data[i + 2] = Math.round(clamp(data[i + 2] + blueLift, 0, 255));
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function charsFromCodePoints(codePoints: number[]): string {
+  return codePoints.map((codePoint) => String.fromCharCode(codePoint)).join("");
+}
+
+function charsFromCodePointRange(start: number, end: number): string {
+  return charsFromCodePoints(
+    Array.from({ length: end - start + 1 }, (_item, index) => start + index),
+  );
+}
+
+function uniqueChars(chars: string): string {
+  return Array.from(new Set(Array.from(chars))).join("");
+}
+
+const PRINTABLE_ASCII_CHARS = charsFromCodePoints(
+  Array.from({ length: 0x7e - 0x20 + 1 }, (_item, index) => 0x20 + index),
+);
+const EXTENDED_LATIN_CHARS = charsFromCodePoints(
+  Array.from({ length: 0xff - 0xa1 + 1 }, (_item, index) => 0xa1 + index).filter((codePoint) => codePoint !== 0xad),
+);
+const EXTENDED_SYMBOL_CHARS = `${charsFromCodePointRange(0x2500, 0x257f)}${charsFromCodePointRange(0x2580, 0x259f)}${charsFromCodePointRange(0x25a0, 0x25ff)}`;
+const ASCII_CANDIDATE_CHARS = uniqueChars(`${PRINTABLE_ASCII_CHARS}${EXTENDED_LATIN_CHARS}${EXTENDED_SYMBOL_CHARS}`);
+const ASCII_RAMP_LEVEL_COUNT = 36;
+const FALLBACK_ASCII_RAMP = uniqueChars(
+  [
+    " ",
+    ".",
+    "'",
+    "`",
+    "^",
+    "\"",
+    ",",
+    ":",
+    ";",
+    "I",
+    "l",
+    "!",
+    "i",
+    ">",
+    "<",
+    "~",
+    "+",
+    "_",
+    "-",
+    "?",
+    "]",
+    "[",
+    "}",
+    "{",
+    "1",
+    ")",
+    "(",
+    "|",
+    "\\",
+    "/",
+    "t",
+    "f",
+    "j",
+    "r",
+    "x",
+    "n",
+    "u",
+    "v",
+    "c",
+    "z",
+    "X",
+    "Y",
+    "U",
+    "J",
+    "C",
+    "L",
+    "Q",
+    "0",
+    "O",
+    "Z",
+    "m",
+    "w",
+    "q",
+    "p",
+    "d",
+    "b",
+    "k",
+    "h",
+    "a",
+    "o",
+    "*",
+    "#",
+    "M",
+    "W",
+    "&",
+    "8",
+    "%",
+    "B",
+    "@",
+    "$",
+  ].join("") + charsFromCodePoints([0xb7, 0xb0, 0xba, 0x25cb, 0x25a1, 0x25cf, 0x25a0, 0x2591, 0x2592, 0x2593, 0x2588]),
+);
+const ASCII_RAMP_CACHE = new Map<string, string>();
+
+function condenseAsciiRamp(scored: Array<{ character: string; coverage: number; index: number }>): string {
+  const visible = scored.filter((entry) => entry.character === " " || entry.coverage > 0.001);
+  const sorted = visible.sort((a, b) => (a.coverage === b.coverage ? a.index - b.index : a.coverage - b.coverage));
+  if (sorted.length <= ASCII_RAMP_LEVEL_COUNT) {
+    return sorted.map((entry) => entry.character).join("");
+  }
+
+  const selected: string[] = [];
+  for (let i = 0; i < ASCII_RAMP_LEVEL_COUNT; i += 1) {
+    const index = Math.round((i / (ASCII_RAMP_LEVEL_COUNT - 1)) * (sorted.length - 1));
+    selected.push(sorted[index].character);
+  }
+  return uniqueChars(selected.join(""));
+}
+
+function createAsciiMeasureContext(width: number, height: number): CanvasRenderingContext2D | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  return canvas.getContext("2d", { willReadFrequently: true });
+}
+
+function getAsciiDensityRamp(font: string, fontSize: number): string {
+  const cacheKey = `${font}|${fontSize}`;
+  const cached = ASCII_RAMP_CACHE.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const width = Math.max(12, Math.ceil(fontSize * 2));
+  const height = Math.max(12, Math.ceil(fontSize * 2));
+  const measureCtx = createAsciiMeasureContext(width, height);
+  if (!measureCtx) {
+    ASCII_RAMP_CACHE.set(cacheKey, FALLBACK_ASCII_RAMP);
+    return FALLBACK_ASCII_RAMP;
+  }
+
+  measureCtx.textAlign = "center";
+  measureCtx.textBaseline = "middle";
+  measureCtx.font = font;
+  measureCtx.fillStyle = "#ffffff";
+
+  const scored = Array.from(ASCII_CANDIDATE_CHARS).map((character, index) => {
+    measureCtx.clearRect(0, 0, width, height);
+    measureCtx.fillText(character, width / 2, height / 2);
+    const { data } = measureCtx.getImageData(0, 0, width, height);
+    let ink = 0;
+    for (let i = 3; i < data.length; i += 4) {
+      ink += data[i] / 255;
+    }
+    return {
+      character,
+      coverage: ink / (width * height),
+      index,
+    };
+  });
+
+  const sorted = condenseAsciiRamp(scored);
+  const ramp = sorted.length > 1 ? sorted : FALLBACK_ASCII_RAMP;
+  ASCII_RAMP_CACHE.set(cacheKey, ramp);
+  return ramp;
+}
+
+function shapeAsciiLuminance(brightness: number): number {
+  const normalized = clamp(brightness / 255, 0, 1);
+  const contrasted = clamp((normalized - 0.5) * 1.4 + 0.5, 0, 1);
+  return Math.pow(contrasted, 0.78);
+}
 
 function rgbStyle(r: number, g: number, b: number): string {
   return `rgb(${Math.round(clamp(r, 0, 255))},${Math.round(clamp(g, 0, 255))},${Math.round(clamp(b, 0, 255))})`;
@@ -1243,57 +1976,74 @@ function applyAscii(
     return;
   }
 
+  const style = clamp(Math.round(tuning.asciiStyle || 0), 0, 3);
   const density = clampPercent(tuning.asciiDensity, 50, 200) / 100;
   const shortestSide = Math.max(1, Math.min(width, height));
-  const minCellSize = Math.min(shortestSide, Math.max(3, Math.floor(pixelSize / 2)));
-  const maxCellSize = Math.max(minCellSize, Math.min(Math.max(width, height), pixelSize * 4));
-  const cellSize = Math.round(clamp(Math.round(pixelSize / density), minCellSize, maxCellSize));
-  const fontSize = Math.max(3, Math.floor(cellSize * 0.86));
+  const baseCellH = Math.max(6, Math.round(pixelSize * 1.5 / density));
+  const cellHeight = clamp(baseCellH, 6, Math.min(shortestSide, pixelSize * 4));
+  const cellWidth = Math.max(4, Math.round(cellHeight * 0.6));
+  const fontSize = Math.max(6, Math.round(cellHeight * 0.95));
+  const font = `bold ${fontSize}px "Courier New", monospace`;
+  const asciiRamp = getAsciiDensityRamp(font, fontSize);
   const before = ctx.getImageData(0, 0, width, height);
   const source = new Uint8ClampedArray(before.data);
 
   ctx.save();
-  ctx.clearRect(0, 0, width, height);
+  const bgColor = style === 3 ? "#f4ecd8" : "#0a0a0a";
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, width, height);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = `${fontSize}px "Courier New", monospace`;
+  ctx.font = font;
 
-  for (let y = 0; y < height; y += cellSize) {
-    const endY = Math.min(height, y + cellSize);
-    for (let x = 0; x < width; x += cellSize) {
-      const endX = Math.min(width, x + cellSize);
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      let count = 0;
+  for (let y = 0; y < height; y += cellHeight) {
+    const endY = Math.min(height, y + cellHeight);
+    for (let x = 0; x < width; x += cellWidth) {
+      const endX = Math.min(width, x + cellWidth);
+      let r = 0, g = 0, b = 0, count = 0;
 
-      for (let sampleY = y; sampleY < endY; sampleY += 1) {
-        for (let sampleX = x; sampleX < endX; sampleX += 1) {
-          const offset = (sampleY * width + sampleX) * 4;
-          r += source[offset];
-          g += source[offset + 1];
-          b += source[offset + 2];
+      for (let sY = y; sY < endY; sY += 2) {
+        for (let sX = x; sX < endX; sX += 2) {
+          const off = (sY * width + sX) * 4;
+          r += source[off]; g += source[off + 1]; b += source[off + 2];
           count += 1;
         }
       }
+      if (count === 0) continue;
 
-      if (count === 0) {
-        continue;
-      }
-
-      const avgR = r / count;
-      const avgG = g / count;
-      const avgB = b / count;
+      const avgR = r / count, avgG = g / count, avgB = b / count;
       const brightness = luma(avgR, avgG, avgB);
-      const rampIndex = Math.round(clamp((brightness / 255) * (ASCII_RAMP.length - 1), 0, ASCII_RAMP.length - 1));
-      const character = ASCII_RAMP[rampIndex];
+      const shaped = shapeAsciiLuminance(brightness);
+      const rampIdx = Math.round(clamp(shaped * (asciiRamp.length - 1), 0, asciiRamp.length - 1));
+      const ch = asciiRamp[rampIdx];
+      if (ch === " ") continue;
 
-      ctx.fillStyle = rgbStyle(avgR * 0.18, avgG * 0.18, avgB * 0.18);
-      ctx.fillRect(x, y, endX - x, endY - y);
-      if (character !== " ") {
-        ctx.fillStyle = rgbStyle(avgR + (255 - avgR) * 0.18, avgG + (255 - avgG) * 0.18, avgB + (255 - avgB) * 0.18);
-        ctx.fillText(character, x + (endX - x) / 2, y + (endY - y) / 2);
+      switch (style) {
+        case 0: {
+          const boost = 1.4;
+          const cr = clamp(avgR * boost, 0, 255);
+          const cg = clamp(avgG * boost, 0, 255);
+          const cb = clamp(avgB * boost, 0, 255);
+          ctx.fillStyle = rgbStyle(cr, cg, cb);
+          break;
+        }
+        case 1: {
+          const a = clamp(0.3 + (brightness / 255) * 0.7, 0.15, 1);
+          ctx.fillStyle = `rgba(230,240,255,${a.toFixed(3)})`;
+          break;
+        }
+        case 2: {
+          const a = clamp(0.25 + (brightness / 255) * 0.75, 0.12, 1);
+          ctx.fillStyle = `rgba(0,255,65,${a.toFixed(3)})`;
+          break;
+        }
+        case 3: {
+          const ink = clamp(1.1 - brightness / 255, 0.15, 0.95);
+          ctx.fillStyle = `rgba(25,20,15,${ink.toFixed(3)})`;
+          break;
+        }
       }
+      ctx.fillText(ch, x + (endX - x) / 2, y + (endY - y) / 2);
     }
   }
   ctx.restore();
@@ -1808,6 +2558,42 @@ export interface EffectPlugin {
  */
 export const DEFAULT_EFFECT_PLUGINS: EffectPlugin[] = [
   {
+    key: "invert",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyInvert(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "sepia",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applySepia(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "hueRotate",
+    apply: (ctx, canvas, _grid, tuning, effectTick) => {
+      applyHueRotate(ctx, canvas.width, canvas.height, effectTick, tuning);
+    },
+  },
+  {
+    key: "posterize",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyPosterize(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "colorTemp",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyColorTemp(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "saturation",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applySaturation(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
     key: "crt",
     apply: (ctx, canvas, _grid, tuning) => {
       applyCrt(ctx, canvas.width, canvas.height, tuning);
@@ -1871,6 +2657,66 @@ export const DEFAULT_EFFECT_PLUGINS: EffectPlugin[] = [
     key: "outline",
     apply: (ctx, canvas, _grid, tuning) => {
       applyOutline(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "halftone",
+    apply: (ctx, canvas, grid, tuning) => {
+      applyHalftone(ctx, canvas.width, canvas.height, grid.pixelSize, tuning);
+    },
+  },
+  {
+    key: "crosshatch",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyCrosshatch(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "emboss",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyEmboss(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "sharpen",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applySharpen(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "mirror",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyMirrorEffect(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "swirl",
+    apply: (ctx, canvas, _grid, tuning, effectTick) => {
+      applySwirl(ctx, canvas.width, canvas.height, effectTick, tuning);
+    },
+  },
+  {
+    key: "fisheye",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyFisheye(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "jitter",
+    apply: (ctx, canvas, _grid, tuning, effectTick) => {
+      applyJitter(ctx, canvas.width, canvas.height, effectTick, tuning);
+    },
+  },
+  {
+    key: "ps1Dither",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyPs1Dither(ctx, canvas.width, canvas.height, tuning);
+    },
+  },
+  {
+    key: "ps2Bloom",
+    apply: (ctx, canvas, _grid, tuning) => {
+      applyPs2Bloom(ctx, canvas.width, canvas.height, tuning);
     },
   },
   {

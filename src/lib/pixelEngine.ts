@@ -111,71 +111,81 @@ function pixelizeStandard(
   pixelSize: number,
   selectedPalette: PaletteColor[] | null,
 ): PixelGrid {
+  const srcW = image.naturalWidth || image.width;
+  const srcH = image.naturalHeight || image.height;
+  const sampleW = Math.min(srcW, gridWidth * pixelSize);
+  const sampleH = Math.min(srcH, gridHeight * pixelSize);
+
   const temp = document.createElement("canvas");
-  temp.width = gridWidth;
-  temp.height = gridHeight;
+  temp.width = sampleW;
+  temp.height = sampleH;
   const ctx = temp.getContext("2d", { willReadFrequently: true });
-  if (!ctx) {
-    throw new Error("2D canvas is unavailable.");
-  }
+  if (!ctx) throw new Error("2D canvas is unavailable.");
 
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "medium";
-  ctx.drawImage(image, 0, 0, gridWidth, gridHeight);
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, 0, 0, sampleW, sampleH);
 
-  const { data } = ctx.getImageData(0, 0, gridWidth, gridHeight);
+  const { data } = ctx.getImageData(0, 0, sampleW, sampleH);
   const total = gridWidth * gridHeight;
   const indices = new Uint16Array(total);
+  const cellW = sampleW / gridWidth;
+  const cellH = sampleH / gridHeight;
 
   if (selectedPalette && selectedPalette.length > 0) {
-    for (let i = 0; i < total; i += 1) {
-      const offset = i * 4;
-      const alpha = data[offset + 3];
-      if (alpha < ALPHA_THRESHOLD) {
-        indices[i] = 0;
-        continue;
+    for (let cy = 0; cy < gridHeight; cy += 1) {
+      for (let cx = 0; cx < gridWidth; cx += 1) {
+        const x0 = Math.floor(cx * cellW);
+        const y0 = Math.floor(cy * cellH);
+        const x1 = Math.min(sampleW, Math.floor((cx + 1) * cellW));
+        const y1 = Math.min(sampleH, Math.floor((cy + 1) * cellH));
+        let sumR = 0, sumG = 0, sumB = 0, count = 0;
+        for (let y = y0; y < y1; y += 1) {
+          const row = y * sampleW;
+          for (let x = x0; x < x1; x += 1) {
+            const off = (row + x) * 4;
+            if (data[off + 3] < ALPHA_THRESHOLD) continue;
+            sumR += data[off]; sumG += data[off + 1]; sumB += data[off + 2];
+            count += 1;
+          }
+        }
+        const idx = cy * gridWidth + cx;
+        if (count === 0) { indices[idx] = 0; continue; }
+        indices[idx] = nearestColorIndex(sumR / count, sumG / count, sumB / count, selectedPalette);
       }
-      const r = data[offset];
-      const g = data[offset + 1];
-      const b = data[offset + 2];
-      indices[i] = nearestColorIndex(r, g, b, selectedPalette);
     }
-
-    return {
-      width: gridWidth,
-      height: gridHeight,
-      pixelSize,
-      indices,
-      colors: selectedPalette,
-    };
+    return { width: gridWidth, height: gridHeight, pixelSize, indices, colors: selectedPalette };
   }
 
   const colors: PaletteColor[] = [[0, 0, 0]];
   const dynamicMap = new Map<number, number>([[0, 0]]);
-
-  for (let i = 0; i < total; i += 1) {
-    const offset = i * 4;
-    const alpha = data[offset + 3];
-    if (alpha < ALPHA_THRESHOLD) {
-      indices[i] = 0;
-      continue;
+  for (let cy = 0; cy < gridHeight; cy += 1) {
+    for (let cx = 0; cx < gridWidth; cx += 1) {
+      const x0 = Math.floor(cx * cellW);
+      const y0 = Math.floor(cy * cellH);
+      const x1 = Math.min(sampleW, Math.floor((cx + 1) * cellW));
+      const y1 = Math.min(sampleH, Math.floor((cy + 1) * cellH));
+      let sumR = 0, sumG = 0, sumB = 0, count = 0;
+      for (let y = y0; y < y1; y += 1) {
+        const row = y * sampleW;
+        for (let x = x0; x < x1; x += 1) {
+          const off = (row + x) * 4;
+          if (data[off + 3] < ALPHA_THRESHOLD) continue;
+          sumR += data[off]; sumG += data[off + 1]; sumB += data[off + 2];
+          count += 1;
+        }
+      }
+      const idx = cy * gridWidth + cx;
+      if (count === 0) { indices[idx] = 0; continue; }
+      const key = quantizedRgbKey(sumR / count, sumG / count, sumB / count);
+      if (!dynamicMap.has(key)) {
+        dynamicMap.set(key, colors.length);
+        colors.push(keyToColor(key));
+      }
+      indices[idx] = dynamicMap.get(key) ?? 0;
     }
-
-    const key = quantizedRgbKey(data[offset], data[offset + 1], data[offset + 2]);
-    if (!dynamicMap.has(key)) {
-      dynamicMap.set(key, colors.length);
-      colors.push(keyToColor(key));
-    }
-    indices[i] = dynamicMap.get(key) ?? 0;
   }
-
-  return {
-    width: gridWidth,
-    height: gridHeight,
-    pixelSize,
-    indices,
-    colors,
-  };
+  return { width: gridWidth, height: gridHeight, pixelSize, indices, colors };
 }
 
 /**
@@ -339,6 +349,157 @@ function pixelizeEdgeAware(
   };
 }
 
+function pixelizeFloydSteinberg(
+  image: HTMLImageElement,
+  gridWidth: number,
+  gridHeight: number,
+  pixelSize: number,
+  selectedPalette: PaletteColor[] | null,
+): PixelGrid {
+  const temp = document.createElement("canvas");
+  temp.width = gridWidth;
+  temp.height = gridHeight;
+  const ctx = temp.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("2D canvas is unavailable.");
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, 0, 0, gridWidth, gridHeight);
+
+  const imgData = ctx.getImageData(0, 0, gridWidth, gridHeight);
+  const data = imgData.data;
+  const total = gridWidth * gridHeight;
+  const indices = new Uint16Array(total);
+
+  const errR = new Float32Array(total);
+  const errG = new Float32Array(total);
+  const errB = new Float32Array(total);
+  for (let i = 0; i < total; i++) {
+    errR[i] = data[i * 4];
+    errG[i] = data[i * 4 + 1];
+    errB[i] = data[i * 4 + 2];
+  }
+
+  const palette = selectedPalette && selectedPalette.length > 0 ? selectedPalette : null;
+  const colors: PaletteColor[] = palette ? palette : [[0, 0, 0]];
+  const dynamicMap = palette ? null : new Map<number, number>([[0, 0]]);
+
+  for (let y = 0; y < gridHeight; y += 1) {
+    for (let x = 0; x < gridWidth; x += 1) {
+      const i = y * gridWidth + x;
+      if (data[i * 4 + 3] < ALPHA_THRESHOLD) { indices[i] = 0; continue; }
+      const oldR = Math.max(0, Math.min(255, errR[i]));
+      const oldG = Math.max(0, Math.min(255, errG[i]));
+      const oldB = Math.max(0, Math.min(255, errB[i]));
+
+      let newR: number, newG: number, newB: number;
+      if (palette) {
+        const idx = nearestColorIndex(oldR, oldG, oldB, palette);
+        indices[i] = idx;
+        [newR, newG, newB] = palette[idx];
+      } else {
+        const key = quantizedRgbKey(oldR, oldG, oldB);
+        if (!dynamicMap!.has(key)) {
+          dynamicMap!.set(key, colors.length);
+          colors.push(keyToColor(key));
+        }
+        indices[i] = dynamicMap!.get(key) ?? 0;
+        [newR, newG, newB] = colors[indices[i]];
+      }
+
+      const eR = oldR - newR;
+      const eG = oldG - newG;
+      const eB = oldB - newB;
+
+      if (x + 1 < gridWidth) {
+        const j = i + 1;
+        errR[j] += eR * 7 / 16; errG[j] += eG * 7 / 16; errB[j] += eB * 7 / 16;
+      }
+      if (y + 1 < gridHeight) {
+        if (x > 0) {
+          const j = i + gridWidth - 1;
+          errR[j] += eR * 3 / 16; errG[j] += eG * 3 / 16; errB[j] += eB * 3 / 16;
+        }
+        const j2 = i + gridWidth;
+        errR[j2] += eR * 5 / 16; errG[j2] += eG * 5 / 16; errB[j2] += eB * 5 / 16;
+        if (x + 1 < gridWidth) {
+          const j3 = i + gridWidth + 1;
+          errR[j3] += eR * 1 / 16; errG[j3] += eG * 1 / 16; errB[j3] += eB * 1 / 16;
+        }
+      }
+    }
+  }
+  return { width: gridWidth, height: gridHeight, pixelSize, indices, colors };
+}
+
+const BAYER4X4 = [
+  0, 8, 2, 10,
+  12, 4, 14, 6,
+  3, 11, 1, 9,
+  15, 7, 13, 5,
+];
+
+function pixelizeOrderedDither(
+  image: HTMLImageElement,
+  gridWidth: number,
+  gridHeight: number,
+  pixelSize: number,
+  selectedPalette: PaletteColor[] | null,
+): PixelGrid {
+  const temp = document.createElement("canvas");
+  temp.width = gridWidth;
+  temp.height = gridHeight;
+  const ctx = temp.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("2D canvas is unavailable.");
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, 0, 0, gridWidth, gridHeight);
+
+  const imgData = ctx.getImageData(0, 0, gridWidth, gridHeight);
+  const data = imgData.data;
+  const total = gridWidth * gridHeight;
+  const indices = new Uint16Array(total);
+  const spread = 48;
+
+  if (selectedPalette && selectedPalette.length > 0) {
+    for (let y = 0; y < gridHeight; y += 1) {
+      for (let x = 0; x < gridWidth; x += 1) {
+        const i = y * gridWidth + x;
+        const offset = i * 4;
+        if (data[offset + 3] < ALPHA_THRESHOLD) { indices[i] = 0; continue; }
+        const threshold = (BAYER4X4[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * spread;
+        const r = Math.max(0, Math.min(255, data[offset] + threshold));
+        const g = Math.max(0, Math.min(255, data[offset + 1] + threshold));
+        const b = Math.max(0, Math.min(255, data[offset + 2] + threshold));
+        indices[i] = nearestColorIndex(r, g, b, selectedPalette);
+      }
+    }
+    return { width: gridWidth, height: gridHeight, pixelSize, indices, colors: selectedPalette };
+  }
+
+  const colors: PaletteColor[] = [[0, 0, 0]];
+  const dynamicMap = new Map<number, number>([[0, 0]]);
+  for (let y = 0; y < gridHeight; y += 1) {
+    for (let x = 0; x < gridWidth; x += 1) {
+      const i = y * gridWidth + x;
+      const offset = i * 4;
+      if (data[offset + 3] < ALPHA_THRESHOLD) { indices[i] = 0; continue; }
+      const threshold = (BAYER4X4[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * spread;
+      const r = Math.max(0, Math.min(255, data[offset] + threshold));
+      const g = Math.max(0, Math.min(255, data[offset + 1] + threshold));
+      const b = Math.max(0, Math.min(255, data[offset + 2] + threshold));
+      const key = quantizedRgbKey(r, g, b);
+      if (!dynamicMap.has(key)) {
+        dynamicMap.set(key, colors.length);
+        colors.push(keyToColor(key));
+      }
+      indices[i] = dynamicMap.get(key) ?? 0;
+    }
+  }
+  return { width: gridWidth, height: gridHeight, pixelSize, indices, colors };
+}
+
 /**
  * 将本地文件读取为可渲染的 HTMLImageElement。/ Convert a local file into an HTMLImageElement.
  * @param file 图片文件 / Image file.
@@ -381,6 +542,12 @@ export function imageToPixelGrid(
   const gridHeight = Math.max(1, Math.floor(fitted.height / pixelSize));
   if (algorithm === "edgeAware") {
     return pixelizeEdgeAware(image, gridWidth, gridHeight, pixelSize, selectedPalette);
+  }
+  if (algorithm === "orderedDither") {
+    return pixelizeOrderedDither(image, gridWidth, gridHeight, pixelSize, selectedPalette);
+  }
+  if (algorithm === "floydSteinberg") {
+    return pixelizeFloydSteinberg(image, gridWidth, gridHeight, pixelSize, selectedPalette);
   }
   return pixelizeStandard(image, gridWidth, gridHeight, pixelSize, selectedPalette);
 }

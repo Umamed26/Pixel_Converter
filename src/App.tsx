@@ -26,6 +26,7 @@ interface ShortcutBinding {
 const UI_MODE_STORAGE_KEY = "pixel_workshop_ui_mode_v1";
 const THEME_MODE_STORAGE_KEY = "pixel_workshop_theme_mode_v1";
 const LEFT_PANEL_WIDTH_STORAGE_KEY = "pixel_workshop_left_panel_width_v1";
+const BASIC_EFFECT_KEYS = ["scanlines", "crt", "outline", "vignette", "noise", "ascii", "invert", "sepia", "posterize"] as const;
 
 function isTypingTarget(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null;
@@ -277,6 +278,15 @@ function App() {
   const compareDragRef = useRef<{ x: number; y: number } | null>(null);
   const isLocalhost = window.location.hostname === "localhost";
   const isAdvancedMode = uiMode === "advanced";
+  const visibleEffectKeys = isAdvancedMode ? lists.effects : BASIC_EFFECT_KEYS;
+  const activeEffectCount = lists.effects.filter((effectKey) => effects[effectKey]).length;
+  const exportHint = !grid
+    ? t("exportDisabledNoImage")
+    : isRecording
+      ? t("exportDisabledRecording")
+      : isBatchProcessing
+        ? t("exportDisabledBatch")
+        : t("exportReadyHint");
 
   const ghostMessages = useMemo(() => GHOST_MESSAGES[lang], [lang]);
   const mainShellStyle = useMemo(
@@ -970,7 +980,40 @@ function App() {
           ) : null}
         </div>
 
-        <section className="main-body">
+        <section className="workflow-strip" aria-label={t("workflowTitle")}>
+          <button type="button" className="workflow-card workflow-card-action" onClick={onPickFile}>
+            <span className="workflow-step">1</span>
+            <span className="workflow-copy">
+              <strong>{t("workflowImportTitle")}</strong>
+              <small>{grid ? t("workflowImportReady") : t("workflowImportHint")}</small>
+            </span>
+          </button>
+          <div className="workflow-card">
+            <span className="workflow-step">2</span>
+            <span className="workflow-copy">
+              <strong>{t("workflowAdjustTitle")}</strong>
+              <small>
+                {`${pixelSize}px / ${activeEffectCount} ${t("workflowFxCount")}`}
+              </small>
+            </span>
+          </div>
+          <button
+            type="button"
+            className="workflow-card workflow-card-action"
+            onClick={() => {
+              void onDownloadPng();
+            }}
+            disabled={!grid || isRecording || isBatchProcessing}
+          >
+            <span className="workflow-step">3</span>
+            <span className="workflow-copy">
+              <strong>{t("workflowExportTitle")}</strong>
+              <small>{exportHint}</small>
+            </span>
+          </button>
+        </section>
+
+        <section className={`main-body ${isAdvancedMode ? "is-advanced" : "is-basic"}`}>
           <aside className="left-column">
             <section className="tool-window">
               <header>
@@ -992,9 +1035,9 @@ function App() {
                   ))}
                 </div>
 
-                <div className="group-label">{t("effects")}</div>
+                <div className="group-label">{isAdvancedMode ? t("effects") : t("basicEffectsTitle")}</div>
                 <div className="tiny-grid fx-grid">
-                  {lists.effects.map((effectKey) => (
+                  {visibleEffectKeys.map((effectKey) => (
                     <button
                       key={effectKey}
                       type="button"
@@ -1005,6 +1048,9 @@ function App() {
                     </button>
                   ))}
                 </div>
+                {!isAdvancedMode ? (
+                  <small className="tool-hint">{t("basicEffectsHint")}</small>
+                ) : null}
 
                 {isAdvancedMode ? (
                   <label className="dialog-toggle perf-toggle">
@@ -1018,7 +1064,8 @@ function App() {
                 ) : null}
 
                 {isAdvancedMode ? (
-                  <>
+                  <details className="inline-advanced-panel">
+                    <summary>{t("advancedAdjustmentsTitle")}</summary>
                     <div className="group-label">{t("pixelizeAlgorithm")}</div>
                     <div className="tiny-grid">
                       {lists.pixelizeAlgorithms.map((algorithm) => (
@@ -1032,11 +1079,75 @@ function App() {
                         </button>
                       ))}
                     </div>
-                  </>
+                  </details>
                 ) : null}
 
                 {isAdvancedMode ? (
                   <div className="fx-tuning">
+                  {effects.invert ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_invert")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.invertPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.invertPower} onChange={(event) => patchEffectTuning({ invertPower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.sepia ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_sepia")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.sepiaPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.sepiaPower} onChange={(event) => patchEffectTuning({ sepiaPower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.hueRotate ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_hueRotate")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.hueRotatePower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.hueRotatePower} onChange={(event) => patchEffectTuning({ hueRotatePower: Number(event.target.value) })} />
+                      </label>
+                      <label>
+                        <span>{t("fxSpeed")} {effectTuning.hueRotateSpeed}%</span>
+                        <input type="range" min={25} max={300} value={effectTuning.hueRotateSpeed} onChange={(event) => patchEffectTuning({ hueRotateSpeed: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.posterize ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_posterize")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.posterizePower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.posterizePower} onChange={(event) => patchEffectTuning({ posterizePower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.colorTemp ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_colorTemp")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.colorTempPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.colorTempPower} onChange={(event) => patchEffectTuning({ colorTempPower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.saturation ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_saturation")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.saturationPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.saturationPower} onChange={(event) => patchEffectTuning({ saturationPower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
                   {effects.glitch ? (
                     <div className="fx-tuning-row">
                       <span className="fx-tuning-title">{t("effect_glitch")}</span>
@@ -1279,6 +1390,126 @@ function App() {
                     </div>
                   ) : null}
 
+                  {effects.halftone ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_halftone")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.halftonePower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.halftonePower} onChange={(event) => patchEffectTuning({ halftonePower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.crosshatch ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_crosshatch")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.crosshatchPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.crosshatchPower} onChange={(event) => patchEffectTuning({ crosshatchPower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.emboss ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_emboss")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.embossPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.embossPower} onChange={(event) => patchEffectTuning({ embossPower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.sharpen ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_sharpen")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.sharpenPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.sharpenPower} onChange={(event) => patchEffectTuning({ sharpenPower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.mirror ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_mirror")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.mirrorPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.mirrorPower} onChange={(event) => patchEffectTuning({ mirrorPower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.swirl ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_swirl")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.swirlPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.swirlPower} onChange={(event) => patchEffectTuning({ swirlPower: Number(event.target.value) })} />
+                      </label>
+                      <label>
+                        <span>{t("fxSpeed")} {effectTuning.swirlSpeed}%</span>
+                        <input type="range" min={25} max={300} value={effectTuning.swirlSpeed} onChange={(event) => patchEffectTuning({ swirlSpeed: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.fisheye ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_fisheye")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.fisheyePower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.fisheyePower} onChange={(event) => patchEffectTuning({ fisheyePower: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.jitter ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_jitter")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.jitterPower}%</span>
+                        <input type="range" min={0} max={220} value={effectTuning.jitterPower} onChange={(event) => patchEffectTuning({ jitterPower: Number(event.target.value) })} />
+                      </label>
+                      <label>
+                        <span>{t("fxSpeed")} {effectTuning.jitterSpeed}%</span>
+                        <input type="range" min={25} max={300} value={effectTuning.jitterSpeed} onChange={(event) => patchEffectTuning({ jitterSpeed: Number(event.target.value) })} />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.ps1Dither ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_ps1Dither")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.ps1DitherPower}%</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={220}
+                          value={effectTuning.ps1DitherPower}
+                          onChange={(event) => patchEffectTuning({ ps1DitherPower: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {effects.ps2Bloom ? (
+                    <div className="fx-tuning-row">
+                      <span className="fx-tuning-title">{t("effect_ps2Bloom")}</span>
+                      <label>
+                        <span>{t("fxPower")} {effectTuning.ps2BloomPower}%</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={220}
+                          value={effectTuning.ps2BloomPower}
+                          onChange={(event) => patchEffectTuning({ ps2BloomPower: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
                   {effects.ascii ? (
                     <div className="fx-tuning-row">
                       <span className="fx-tuning-title">{t("effect_ascii")}</span>
@@ -1302,6 +1533,18 @@ function App() {
                           onChange={(event) => patchEffectTuning({ asciiDensity: Number(event.target.value) })}
                         />
                       </label>
+                      <label>
+                        <span>{t("asciiStyleLabel")}</span>
+                        <select
+                          value={effectTuning.asciiStyle}
+                          onChange={(event) => patchEffectTuning({ asciiStyle: Number(event.target.value) })}
+                        >
+                          <option value={0}>{t("asciiStyle_color")}</option>
+                          <option value={1}>{t("asciiStyle_mono")}</option>
+                          <option value={2}>{t("asciiStyle_matrix")}</option>
+                          <option value={3}>{t("asciiStyle_typewriter")}</option>
+                        </select>
+                      </label>
                     </div>
                   ) : null}
                   </div>
@@ -1310,11 +1553,11 @@ function App() {
             </section>
 
             {isAdvancedMode ? (
-              <section className="tool-window">
-              <header>
+              <details className="tool-window advanced-panel">
+              <summary>
                 <span>{t("animationTitle")}</span>
                 <WindowControls />
-              </header>
+              </summary>
               <div className="tool-content">
                 <label className="dialog-toggle">
                   <input
@@ -1368,7 +1611,7 @@ function App() {
                   </button>
                 </div>
               </div>
-              </section>
+              </details>
             ) : null}
 
             <section className="tool-window">
@@ -1401,7 +1644,8 @@ function App() {
                   })}
                 </div>
                 {isAdvancedMode ? (
-                  <>
+                  <details className="inline-advanced-panel">
+                    <summary>{t("paletteAdvancedTools")}</summary>
                     <div className="palette-tools">
                       <button
                         type="button"
@@ -1537,16 +1781,17 @@ function App() {
                         </button>
                       </div>
                     ) : null}
-                  </>
+                  </details>
                 ) : null}
               </div>
             </section>
 
-            <section className="tool-window">
-              <header>
+            {isAdvancedMode ? (
+              <details className="tool-window advanced-panel">
+              <summary>
                 <span>{t("dialogTitle")}</span>
                 <WindowControls />
-              </header>
+              </summary>
               <div className="tool-content">
                 <label className="dialog-toggle">
                   <input
@@ -1658,14 +1903,15 @@ function App() {
                   </div>
                 ) : null}
               </div>
-            </section>
+              </details>
+            ) : null}
 
             {isAdvancedMode ? (
-              <section className="tool-window">
-              <header>
+              <details className="tool-window advanced-panel">
+              <summary>
                 <span>{t("maskTitle")}</span>
                 <WindowControls />
-              </header>
+              </summary>
               <div className="tool-content">
                 <label className="dialog-toggle">
                   <input
@@ -1772,15 +2018,15 @@ function App() {
                   </div>
                 </div>
               </div>
-              </section>
+              </details>
             ) : null}
 
             {isAdvancedMode ? (
-              <section className="tool-window">
-              <header>
+              <details className="tool-window advanced-panel">
+              <summary>
                 <span>{t("shortcutTitle")}</span>
                 <WindowControls />
-              </header>
+              </summary>
               <div className="tool-content">
                 <div className="shortcut-list">
                   {shortcutBindings.map((binding) => (
@@ -1791,15 +2037,15 @@ function App() {
                   ))}
                 </div>
               </div>
-              </section>
+              </details>
             ) : null}
 
             {isAdvancedMode ? (
-              <section className="tool-window">
-              <header>
+              <details className="tool-window advanced-panel">
+              <summary>
                 <span>{t("pluginTitle")}</span>
                 <WindowControls />
-              </header>
+              </summary>
               <div className="tool-content">
                 <label className="dialog-toggle perf-toggle">
                   <input
@@ -1855,15 +2101,15 @@ function App() {
                   )}
                 </div>
               </div>
-              </section>
+              </details>
             ) : null}
 
             {isAdvancedMode ? (
-              <section className="tool-window">
-              <header>
+              <details className="tool-window advanced-panel">
+              <summary>
                 <span>{t("fxPipelineTitle")}</span>
                 <WindowControls />
-              </header>
+              </summary>
               <div className="tool-content">
                 <div className="fx-pipeline-list">
                   {effectPipelineOrder.map((effectKey, index) => (
@@ -1941,15 +2187,15 @@ function App() {
                   ))}
                 </div>
               </div>
-              </section>
+              </details>
             ) : null}
 
             {isAdvancedMode ? (
-              <section className="tool-window">
-              <header>
+              <details className="tool-window advanced-panel">
+              <summary>
                 <span>{t("historyTitle")}</span>
                 <WindowControls />
-              </header>
+              </summary>
               <div className="tool-content">
                 <div className="history-actions">
                   <button type="button" className="retro-btn btn-mini" onClick={undoParamHistory} disabled={!canUndoParamHistory}>
@@ -1980,15 +2226,15 @@ function App() {
                   )}
                 </div>
               </div>
-              </section>
+              </details>
             ) : null}
 
             {isAdvancedMode ? (
-              <section className="tool-window">
-              <header>
+              <details className="tool-window advanced-panel" open>
+              <summary>
                 <span>{t("presetTitle")}</span>
                 <WindowControls />
-              </header>
+              </summary>
               <div className="tool-content">
                 <div className="preset-controls">
                   <input
@@ -2082,7 +2328,7 @@ function App() {
                   )}
                 </div>
               </div>
-              </section>
+              </details>
             ) : null}
           </aside>
 
@@ -2196,9 +2442,20 @@ function App() {
                   ) : null}
                   {!grid ? (
                     <div className="preview-placeholder">
-                      <span className="ph-icon">🖼</span>
-                      <span>{t("dropHint")}</span>
-                      <span>{t("orClick")}</span>
+                      <span className="ph-icon">PX</span>
+                      <strong>{t("previewEmptyTitle")}</strong>
+                      <span>{t("previewEmptySubtitle")}</span>
+                      <button
+                        type="button"
+                        className="retro-btn preview-upload-btn"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onPickFile();
+                        }}
+                      >
+                        {t("uploadButton")}
+                      </button>
+                      <small>{t("privacyNote")}</small>
                     </div>
                   ) : null}
                 </div>
@@ -2211,6 +2468,16 @@ function App() {
                     disabled={!grid || isRecording || isBatchProcessing}
                   >
                     {t("download")}
+                  </button>
+                  <button
+                    type="button"
+                    className="retro-btn btn-mini"
+                    onClick={() => {
+                      void saveCurrentToGallery();
+                    }}
+                    disabled={!grid || isRecording || isBatchProcessing}
+                  >
+                    {t("quickSaveGallery")}
                   </button>
                   {isAdvancedMode ? (
                     <>
@@ -2266,8 +2533,11 @@ function App() {
                       ) : null}
                     </>
                   ) : null}
+                  <small className="export-hint">{exportHint}</small>
                 </div>
                 {isAdvancedMode ? (
+                  <details className="export-advanced-panel">
+                    <summary>{t("exportAdvancedTitle")}</summary>
                   <div className="batch-panel">
                     <div className="export-settings-grid">
                       <label>
@@ -2331,6 +2601,7 @@ function App() {
                       <small className="batch-current">{batchProgress.currentFile}</small>
                     ) : null}
                   </div>
+                  </details>
                 ) : null}
               </div>
             </section>

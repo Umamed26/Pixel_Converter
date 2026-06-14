@@ -209,7 +209,7 @@ const APNG_DEFAULT_FPS = 12;
 const SPRITE_COLUMNS_DEFAULT = 6;
 const EXPORT_FRAME_CAP = 48;
 const DOWNLOAD_OBJECT_URL_REVOKE_DELAY_MS = 1_000;
-const PIXELIZE_ALGORITHMS: PixelizeAlgorithm[] = ["standard", "edgeAware"];
+const PIXELIZE_ALGORITHMS: PixelizeAlgorithm[] = ["standard", "edgeAware", "orderedDither", "floydSteinberg"];
 
 /**
  * 触发基于 Blob URL 的文件下载，并在稍后再释放 URL，避免批量下载时首个文件被浏览器丢掉。
@@ -452,6 +452,12 @@ function detectLanguage(): Lang {
  */
 function defaultEffects(): EffectsState {
   return {
+    invert: false,
+    sepia: false,
+    hueRotate: false,
+    posterize: false,
+    colorTemp: false,
+    saturation: false,
     glitch: false,
     crt: false,
     scanlines: false,
@@ -464,6 +470,16 @@ function defaultEffects(): EffectsState {
     noise: false,
     vignette: false,
     outline: false,
+    halftone: false,
+    crosshatch: false,
+    emboss: false,
+    sharpen: false,
+    mirror: false,
+    swirl: false,
+    fisheye: false,
+    jitter: false,
+    ps1Dither: false,
+    ps2Bloom: false,
     ascii: false,
   };
 }
@@ -492,6 +508,13 @@ function defaultDialog(): DialogState {
  */
 function defaultEffectTuning(): EffectTuning {
   return {
+    invertPower: 100,
+    sepiaPower: 100,
+    hueRotatePower: 100,
+    hueRotateSpeed: 100,
+    posterizePower: 100,
+    colorTempPower: 100,
+    saturationPower: 100,
     glitchPower: 100,
     glitchSpeed: 100,
     crtPower: 100,
@@ -509,8 +532,21 @@ function defaultEffectTuning(): EffectTuning {
     noisePower: 100,
     vignettePower: 100,
     outlinePower: 100,
+    halftonePower: 100,
+    crosshatchPower: 100,
+    embossPower: 100,
+    sharpenPower: 100,
+    mirrorPower: 100,
+    swirlPower: 100,
+    swirlSpeed: 100,
+    fisheyePower: 100,
+    jitterPower: 100,
+    jitterSpeed: 100,
+    ps1DitherPower: 100,
+    ps2BloomPower: 100,
     asciiPower: 100,
     asciiDensity: 100,
+    asciiStyle: 0,
   };
 }
 
@@ -561,6 +597,13 @@ function lerp(a: number, b: number, t: number): number {
 function interpolateEffectTuning(from: EffectTuning, to: EffectTuning, progress: number): EffectTuning {
   const t = clamp(progress, 0, 1);
   return {
+    invertPower: lerp(from.invertPower, to.invertPower, t),
+    sepiaPower: lerp(from.sepiaPower, to.sepiaPower, t),
+    hueRotatePower: lerp(from.hueRotatePower, to.hueRotatePower, t),
+    hueRotateSpeed: lerp(from.hueRotateSpeed, to.hueRotateSpeed, t),
+    posterizePower: lerp(from.posterizePower, to.posterizePower, t),
+    colorTempPower: lerp(from.colorTempPower, to.colorTempPower, t),
+    saturationPower: lerp(from.saturationPower, to.saturationPower, t),
     glitchPower: lerp(from.glitchPower, to.glitchPower, t),
     glitchSpeed: lerp(from.glitchSpeed, to.glitchSpeed, t),
     crtPower: lerp(from.crtPower, to.crtPower, t),
@@ -578,8 +621,21 @@ function interpolateEffectTuning(from: EffectTuning, to: EffectTuning, progress:
     noisePower: lerp(from.noisePower, to.noisePower, t),
     vignettePower: lerp(from.vignettePower, to.vignettePower, t),
     outlinePower: lerp(from.outlinePower, to.outlinePower, t),
+    halftonePower: lerp(from.halftonePower, to.halftonePower, t),
+    crosshatchPower: lerp(from.crosshatchPower, to.crosshatchPower, t),
+    embossPower: lerp(from.embossPower, to.embossPower, t),
+    sharpenPower: lerp(from.sharpenPower, to.sharpenPower, t),
+    mirrorPower: lerp(from.mirrorPower, to.mirrorPower, t),
+    swirlPower: lerp(from.swirlPower, to.swirlPower, t),
+    swirlSpeed: lerp(from.swirlSpeed, to.swirlSpeed, t),
+    fisheyePower: lerp(from.fisheyePower, to.fisheyePower, t),
+    jitterPower: lerp(from.jitterPower, to.jitterPower, t),
+    jitterSpeed: lerp(from.jitterSpeed, to.jitterSpeed, t),
+    ps1DitherPower: lerp(from.ps1DitherPower, to.ps1DitherPower, t),
+    ps2BloomPower: lerp(from.ps2BloomPower, to.ps2BloomPower, t),
     asciiPower: lerp(from.asciiPower, to.asciiPower, t),
     asciiDensity: lerp(from.asciiDensity, to.asciiDensity, t),
+    asciiStyle: Math.round(lerp(from.asciiStyle, to.asciiStyle, t)),
   };
 }
 
@@ -694,7 +750,8 @@ function normalizePaletteId(raw: unknown): PaletteId | null {
  * @returns 合法算法；非法回落 standard / Valid algorithm with `standard` fallback.
  */
 function normalizePixelizeAlgorithm(raw: unknown): PixelizeAlgorithm {
-  return raw === "edgeAware" ? "edgeAware" : "standard";
+  if (raw === "edgeAware" || raw === "orderedDither" || raw === "floydSteinberg") return raw;
+  return "standard";
 }
 
 /**
@@ -908,6 +965,13 @@ function sanitizeEffectTuning(value: unknown): EffectTuning {
   }
   const record = value as Record<string, unknown>;
   return {
+    invertPower: asFiniteNumber(record.invertPower, seed.invertPower),
+    sepiaPower: asFiniteNumber(record.sepiaPower, seed.sepiaPower),
+    hueRotatePower: asFiniteNumber(record.hueRotatePower, seed.hueRotatePower),
+    hueRotateSpeed: asFiniteNumber(record.hueRotateSpeed, seed.hueRotateSpeed),
+    posterizePower: asFiniteNumber(record.posterizePower, seed.posterizePower),
+    colorTempPower: asFiniteNumber(record.colorTempPower, seed.colorTempPower),
+    saturationPower: asFiniteNumber(record.saturationPower, seed.saturationPower),
     glitchPower: asFiniteNumber(record.glitchPower, seed.glitchPower),
     glitchSpeed: asFiniteNumber(record.glitchSpeed, seed.glitchSpeed),
     crtPower: asFiniteNumber(record.crtPower, seed.crtPower),
@@ -925,8 +989,21 @@ function sanitizeEffectTuning(value: unknown): EffectTuning {
     noisePower: asFiniteNumber(record.noisePower, seed.noisePower),
     vignettePower: asFiniteNumber(record.vignettePower, seed.vignettePower),
     outlinePower: asFiniteNumber(record.outlinePower, seed.outlinePower),
+    halftonePower: asFiniteNumber(record.halftonePower, seed.halftonePower),
+    crosshatchPower: asFiniteNumber(record.crosshatchPower, seed.crosshatchPower),
+    embossPower: asFiniteNumber(record.embossPower, seed.embossPower),
+    sharpenPower: asFiniteNumber(record.sharpenPower, seed.sharpenPower),
+    mirrorPower: asFiniteNumber(record.mirrorPower, seed.mirrorPower),
+    swirlPower: asFiniteNumber(record.swirlPower, seed.swirlPower),
+    swirlSpeed: asFiniteNumber(record.swirlSpeed, seed.swirlSpeed),
+    fisheyePower: asFiniteNumber(record.fisheyePower, seed.fisheyePower),
+    jitterPower: asFiniteNumber(record.jitterPower, seed.jitterPower),
+    jitterSpeed: asFiniteNumber(record.jitterSpeed, seed.jitterSpeed),
+    ps1DitherPower: asFiniteNumber(record.ps1DitherPower, seed.ps1DitherPower),
+    ps2BloomPower: asFiniteNumber(record.ps2BloomPower, seed.ps2BloomPower),
     asciiPower: clamp(asFiniteNumber(record.asciiPower, seed.asciiPower), 0, 100),
     asciiDensity: clamp(asFiniteNumber(record.asciiDensity, seed.asciiDensity), 50, 200),
+    asciiStyle: clamp(Math.round(asFiniteNumber(record.asciiStyle, seed.asciiStyle)), 0, 3),
   };
 }
 

@@ -45,6 +45,12 @@ function makeGrid(): PixelGrid {
 
 function defaultEffects(): EffectsState {
   return {
+    invert: false,
+    sepia: false,
+    hueRotate: false,
+    posterize: false,
+    colorTemp: false,
+    saturation: false,
     glitch: false,
     crt: false,
     scanlines: false,
@@ -57,12 +63,29 @@ function defaultEffects(): EffectsState {
     noise: false,
     vignette: false,
     outline: false,
+    halftone: false,
+    crosshatch: false,
+    emboss: false,
+    sharpen: false,
+    mirror: false,
+    swirl: false,
+    fisheye: false,
+    jitter: false,
+    ps1Dither: false,
+    ps2Bloom: false,
     ascii: false,
   };
 }
 
 function defaultTuning(): EffectTuning {
   return {
+    invertPower: 100,
+    sepiaPower: 100,
+    hueRotatePower: 100,
+    hueRotateSpeed: 100,
+    posterizePower: 100,
+    colorTempPower: 100,
+    saturationPower: 100,
     glitchPower: 100,
     glitchSpeed: 100,
     crtPower: 100,
@@ -80,8 +103,21 @@ function defaultTuning(): EffectTuning {
     noisePower: 100,
     vignettePower: 100,
     outlinePower: 100,
+    halftonePower: 100,
+    crosshatchPower: 100,
+    embossPower: 100,
+    sharpenPower: 100,
+    mirrorPower: 100,
+    swirlPower: 100,
+    swirlSpeed: 100,
+    fisheyePower: 100,
+    jitterPower: 100,
+    jitterSpeed: 100,
+    ps1DitherPower: 100,
+    ps2BloomPower: 100,
     asciiPower: 100,
     asciiDensity: 100,
+    asciiStyle: 0,
   };
 }
 
@@ -110,6 +146,12 @@ function makeMask(grid: PixelGrid, fill = 0): MaskState {
     brushSize: 3,
     mode: "paint",
     fxEnabled: {
+      invert: true,
+      sepia: true,
+      hueRotate: true,
+      posterize: true,
+      colorTemp: true,
+      saturation: true,
       glitch: true,
       crt: true,
       scanlines: true,
@@ -122,6 +164,16 @@ function makeMask(grid: PixelGrid, fill = 0): MaskState {
       noise: true,
       vignette: true,
       outline: true,
+      halftone: true,
+      crosshatch: true,
+      emboss: true,
+      sharpen: true,
+      mirror: true,
+      swirl: true,
+      fisheye: true,
+      jitter: true,
+      ps1Dither: true,
+      ps2Bloom: true,
       ascii: true,
     },
     data,
@@ -163,6 +215,8 @@ describe("renderFrame FX plugin registry", () => {
       "noise",
       "vignette",
       "outline",
+      "ps1Dither",
+      "ps2Bloom",
       "ascii",
       "glitch",
     ]);
@@ -175,6 +229,12 @@ describe("renderFrame visual regression hash", () => {
     const baseMask = makeMask(grid, 0);
 
     const allFx: EffectsState = {
+      invert: true,
+      sepia: true,
+      hueRotate: true,
+      posterize: true,
+      colorTemp: true,
+      saturation: true,
       glitch: true,
       crt: true,
       scanlines: true,
@@ -187,6 +247,16 @@ describe("renderFrame visual regression hash", () => {
       noise: true,
       vignette: true,
       outline: true,
+      halftone: true,
+      crosshatch: true,
+      emboss: true,
+      sharpen: true,
+      mirror: true,
+      swirl: true,
+      fisheye: true,
+      jitter: true,
+      ps1Dither: true,
+      ps2Bloom: true,
       ascii: true,
     };
     const maskedGlitch = makeMask(grid, 0);
@@ -206,8 +276,12 @@ describe("renderFrame visual regression hash", () => {
       none: renderHash(defaultEffects(), baseMask),
       crt: renderHash({ ...defaultEffects(), crt: true }, baseMask),
       glitch: renderHash({ ...defaultEffects(), glitch: true }, baseMask),
+      ps1Dither: renderHash({ ...defaultEffects(), ps1Dither: true }, baseMask),
+      ps2Bloom: renderHash({ ...defaultEffects(), ps2Bloom: true }, baseMask),
       ascii: renderHash({ ...defaultEffects(), ascii: true }, baseMask),
       maskedAscii: renderHash({ ...defaultEffects(), ascii: true }, maskedGlitch),
+      maskedPs1Dither: renderHash({ ...defaultEffects(), ps1Dither: true }, maskedGlitch),
+      maskedPs2Bloom: renderHash({ ...defaultEffects(), ps2Bloom: true }, maskedGlitch),
       cycleGhost: renderHash({ ...defaultEffects(), paletteCycle: true, ghost: true }, baseMask),
       all: renderHash(allFx, baseMask),
       allMaskedGlitch: renderHash(allFx, maskedGlitch),
@@ -215,14 +289,18 @@ describe("renderFrame visual regression hash", () => {
 
     expect(hashes).toMatchInlineSnapshot(`
       {
-        "all": "712545fb",
-        "allMaskedGlitch": "331f0ebf",
-        "ascii": "b9245cd9",
+        "all": "42d919c5",
+        "allMaskedGlitch": "51ff85ce",
+        "ascii": "f673c785",
         "crt": "7f0a92cd",
         "cycleGhost": "a1d7c055",
         "glitch": "3a3ca26d",
-        "maskedAscii": "e3792847",
+        "maskedAscii": "0e770139",
+        "maskedPs1Dither": "5fd58a5d",
+        "maskedPs2Bloom": "a9c7ff55",
         "none": "3beab2c5",
+        "ps1Dither": "605277b8",
+        "ps2Bloom": "56c0c782",
       }
     `);
   });

@@ -147,7 +147,8 @@ function parsePaletteOverrides(value: unknown): Partial<Record<string, PaletteCo
  * @returns 合法算法值；缺省回落 standard / Parsed algorithm or `standard` fallback.
  */
 function parsePixelizeAlgorithm(value: unknown): PixelizeAlgorithm {
-  return value === "edgeAware" ? "edgeAware" : "standard";
+  if (value === "edgeAware" || value === "orderedDither" || value === "floydSteinberg") return value;
+  return "standard";
 }
 
 /**

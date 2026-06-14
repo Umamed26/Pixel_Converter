@@ -28,6 +28,12 @@ const DIALOG_STYLES: DialogState["style"][] = [
 ];
 
 const EFFECT_KEYS: Array<keyof EffectsState> = [
+  "invert",
+  "sepia",
+  "hueRotate",
+  "posterize",
+  "colorTemp",
+  "saturation",
   "glitch",
   "crt",
   "scanlines",
@@ -40,10 +46,27 @@ const EFFECT_KEYS: Array<keyof EffectsState> = [
   "noise",
   "vignette",
   "outline",
+  "halftone",
+  "crosshatch",
+  "emboss",
+  "sharpen",
+  "mirror",
+  "swirl",
+  "fisheye",
+  "jitter",
+  "ps1Dither",
+  "ps2Bloom",
   "ascii",
 ];
 
 const DEFAULT_EFFECT_TUNING: EffectTuning = {
+  invertPower: 100,
+  sepiaPower: 100,
+  hueRotatePower: 100,
+  hueRotateSpeed: 100,
+  posterizePower: 100,
+  colorTempPower: 100,
+  saturationPower: 100,
   glitchPower: 100,
   glitchSpeed: 100,
   crtPower: 100,
@@ -61,8 +84,21 @@ const DEFAULT_EFFECT_TUNING: EffectTuning = {
   noisePower: 100,
   vignettePower: 100,
   outlinePower: 100,
+  halftonePower: 100,
+  crosshatchPower: 100,
+  embossPower: 100,
+  sharpenPower: 100,
+  mirrorPower: 100,
+  swirlPower: 100,
+  swirlSpeed: 100,
+  fisheyePower: 100,
+  jitterPower: 100,
+  jitterSpeed: 100,
+  ps1DitherPower: 100,
+  ps2BloomPower: 100,
   asciiPower: 100,
   asciiDensity: 100,
+  asciiStyle: 0,
 };
 
 /**
@@ -262,7 +298,8 @@ function parseMaskConfig(value: unknown): MaskConfig | null {
  * @returns 合法算法值；缺省回落 standard / Parsed algorithm or `standard` fallback.
  */
 function parsePixelizeAlgorithm(value: unknown): PixelizeAlgorithm {
-  return value === "edgeAware" ? "edgeAware" : "standard";
+  if (value === "edgeAware" || value === "orderedDither" || value === "floydSteinberg") return value;
+  return "standard";
 }
 
 /**
