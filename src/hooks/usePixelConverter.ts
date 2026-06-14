@@ -3575,6 +3575,7 @@ export function usePixelConverter(ghostSrc: string) {
       return;
     }
     const encoder = GIFEncoder({ auto: false });
+    encoder.writeHeader();
     const repeat = exportLoopCount < 0 ? 0 : exportLoopCount;
     for (let i = 0; i < exported.frames.length; i += 1) {
       const frame = exported.frames[i];
@@ -3587,7 +3588,7 @@ export function usePixelConverter(ghostSrc: string) {
       const indexed = applyPalette(data, paletteData, "rgb565");
       encoder.writeFrame(indexed, exported.width, exported.height, {
         palette: paletteData,
-        delay: Math.max(2, Math.round(exported.delayMs / 10)),
+        delay: Math.max(20, Math.round(exported.delayMs)),
         repeat,
         first: i === 0,
       });
